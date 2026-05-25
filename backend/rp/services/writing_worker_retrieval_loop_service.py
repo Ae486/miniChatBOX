@@ -335,7 +335,11 @@ class WritingWorkerRetrievalLoopService:
                 "function": {
                     "name": WRITER_RETRIEVAL_SEARCH_TOOL,
                     "description": (
-                        "Search runtime memory with a concise query and return clean RAG results."
+                        "Search runtime memory with a concise query and return clean RAG "
+                        "results. Use entity for one concrete subject; when comparing two "
+                        "entities, prefer separate entity searches for each entity first. "
+                        "Use relation for relationship questions with explicit anchors, "
+                        "Use semantic for abstract background, rules, or broad context."
                     ),
                     "strict": True,
                     "parameters": {
@@ -347,10 +351,8 @@ class WritingWorkerRetrievalLoopService:
                                 "type": "string",
                                 "enum": [
                                     "entity",
-                                    "entity_relation",
+                                    "relation",
                                     "semantic",
-                                    "mixed",
-                                    "vague",
                                 ],
                             },
                             "lexical_anchors": {

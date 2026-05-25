@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -42,11 +42,15 @@ def _normalize_text_list(values: list[str], *, field_name: str) -> list[str]:
 
 RuntimeRetrievalSearchMode = Literal[
     "entity",
-    "entity_relation",
+    "relation",
     "semantic",
-    "mixed",
-    "vague",
 ]
+
+_LEGACY_RUNTIME_RETRIEVAL_MODE_MAP: dict[str, RuntimeRetrievalSearchMode] = {
+    "entity_relation": "relation",
+    "mixed": "semantic",
+    "vague": "semantic",
+}
 
 
 class RetrievalKnowledgeGapItem(BaseModel):
@@ -89,7 +93,14 @@ class RuntimeRetrievalSearchInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     query: str
-    mode: RuntimeRetrievalSearchMode | None = None
+    mode: RuntimeRetrievalSearchMode = Field(
+        default="semantic",
+        description=(
+            "Retrieval intent hint only. Use entity for one concrete subject, "
+            "relation for relationships between explicit anchors, and semantic "
+            "for abstract background, rules, or broad context."
+        ),
+    )
     lexical_anchors: list[str] = Field(default_factory=list)
     semantic_predicates: list[str] = Field(default_factory=list)
 
@@ -97,6 +108,16 @@ class RuntimeRetrievalSearchInput(BaseModel):
     @classmethod
     def _normalize_required_text(cls, value: str, info: ValidationInfo) -> str:
         return _require_non_blank(value, field_name=info.field_name or "value")
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _normalize_mode(cls, value: Any) -> Any:
+        if value is None:
+            return "semantic"
+        text = str(value or "").strip()
+        if not text:
+            return "semantic"
+        return _LEGACY_RUNTIME_RETRIEVAL_MODE_MAP.get(text, text)
 
     @field_validator("lexical_anchors", "semantic_predicates")
     @classmethod

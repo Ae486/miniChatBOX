@@ -7,7 +7,7 @@ import json
 import logging
 from typing import Any, AsyncIterator, Literal, cast
 
-from models.chat import ChatCompletionRequest
+from models.chat import ChatCompletionRequest, ChatMessage
 from rp.agent_runtime.adapters import SetupRuntimeAdapter
 from rp.agent_runtime.contracts import (
     RpAgentTurnResult,
@@ -93,7 +93,7 @@ class SetupAgentExecutionService:
         self._context_governor = context_governor or SetupContextGovernorService()
         self._last_runtime_result: RpAgentTurnResult | None = None
         self._last_runtime_usage_by_workspace_step: dict[
-            tuple[str, str], dict[str, int | None]
+            tuple[str, str], dict[str, Any]
         ] = {}
 
     @property
@@ -205,7 +205,7 @@ class SetupAgentExecutionService:
         request: SetupAgentTurnRequest,
         *,
         estimated_input_tokens: int | None = None,
-        previous_usage: dict[str, int | None] | None = None,
+        previous_usage: dict[str, Any] | None = None,
     ) -> int:
         history_chars = sum(len(item.content or "") for item in request.history)
         estimated_tokens = (
@@ -247,7 +247,7 @@ class SetupAgentExecutionService:
         request: SetupAgentTurnRequest,
         *,
         estimated_input_tokens: int | None = None,
-        previous_usage: dict[str, int | None] | None = None,
+        previous_usage: dict[str, Any] | None = None,
     ) -> list[str]:
         history_chars = sum(len(item.content or "") for item in request.history)
         estimated_tokens = (
@@ -288,7 +288,7 @@ class SetupAgentExecutionService:
 
     @staticmethod
     def _estimate_input_tokens(request: SetupAgentTurnRequest) -> int:
-        """Approximate pre-call input pressure before provider usage exists."""
+        """Fallback approximation used when tokenizer preflight is unavailable."""
 
         char_count = len(request.user_prompt or "") + sum(
             len(item.content or "") for item in request.history
@@ -296,41 +296,208 @@ class SetupAgentExecutionService:
         message_overhead = (len(request.history) + 1) * 8
         return max(1, (char_count + 3) // 4 + message_overhead)
 
+    def _preflight_input_token_count(
+        self,
+        *,
+        request: SetupAgentTurnRequest,
+        model_name: str,
+        provider: Any,
+    ) -> tuple[int, str]:
+        """Return current-turn pre-call token pressure and its source."""
+
+        counter = getattr(self._llm_service, "count_request_tokens", None)
+        if callable(counter):
+            token_request = ChatCompletionRequest(
+                model=model_name,
+                model_id=request.model_id,
+                messages=[
+                    ChatMessage(role=item.role, content=item.content)
+                    for item in request.history
+                ]
+                + [ChatMessage(role="user", content=request.user_prompt or "")],
+                stream=False,
+                provider_id=request.provider_id,
+                provider=provider,
+            )
+            try:
+                token_count = counter(token_request)
+                if isinstance(token_count, dict):
+                    prompt_tokens = token_count.get("prompt_tokens")
+                    if prompt_tokens is not None:
+                        return max(int(prompt_tokens), 0), str(
+                            token_count.get("source") or "litellm_token_counter"
+                        )
+            except Exception as exc:  # pragma: no cover - defensive fallback path
+                logger.debug(
+                    "SetupAgent token preflight fell back to approximation: %s",
+                    exc,
+                )
+        return self._estimate_input_tokens(request), "approx_chars_div_4"
+
     @staticmethod
     def _usage_from_runtime_result(
         result: RpAgentTurnResult | None,
-    ) -> dict[str, int | None] | None:
+    ) -> dict[str, Any] | None:
         if result is None or not isinstance(result.structured_payload, dict):
             return None
         latest_response = result.structured_payload.get("latest_response")
         if not isinstance(latest_response, dict):
             return None
-        usage = latest_response.get("usage")
+        usage = (
+            latest_response.get("usage")
+            or latest_response.get("usage_metadata")
+            or latest_response.get("usageMetadata")
+        )
         if not isinstance(usage, dict):
             return None
-        prompt_tokens_raw: Any = usage.get("prompt_tokens")
-        completion_tokens_raw: Any = usage.get("completion_tokens")
-        total_tokens_raw: Any = usage.get("total_tokens")
+        return SetupAgentExecutionService._normalize_provider_usage(usage)
+
+    @staticmethod
+    def _normalize_provider_usage(usage: dict[str, Any]) -> dict[str, Any] | None:
+        """Normalize provider-returned token usage without discarding raw details."""
+
+        prompt_tokens = SetupAgentExecutionService._first_int(
+            usage,
+            "prompt_tokens",
+            "input_tokens",
+            "prompt_token_count",
+            "promptTokenCount",
+            "inputTokenCount",
+        )
+        completion_tokens = SetupAgentExecutionService._first_int(
+            usage,
+            "completion_tokens",
+            "output_tokens",
+            "candidates_token_count",
+            "candidatesTokenCount",
+            "outputTokenCount",
+        )
+        total_tokens = SetupAgentExecutionService._first_int(
+            usage,
+            "total_tokens",
+            "total_token_count",
+            "totalTokenCount",
+        )
+        prompt_details = usage.get("prompt_tokens_details")
+        if not isinstance(prompt_details, dict):
+            prompt_details = {}
+        completion_details = usage.get("completion_tokens_details")
+        if not isinstance(completion_details, dict):
+            completion_details = {}
+        input_details = usage.get("input_token_details")
+        if not isinstance(input_details, dict):
+            input_details = {}
+        output_details = usage.get("output_token_details")
+        if not isinstance(output_details, dict):
+            output_details = {}
+
+        cached_tokens = SetupAgentExecutionService._first_available_int(
+            SetupAgentExecutionService._first_int(
+                usage,
+                "cached_tokens",
+                "cache_read_input_tokens",
+                "cacheReadInputTokens",
+            ),
+            SetupAgentExecutionService._first_int(prompt_details, "cached_tokens"),
+            SetupAgentExecutionService._first_int(
+                input_details,
+                "cache_read",
+                "cached_tokens",
+            ),
+        )
+        reasoning_tokens = SetupAgentExecutionService._first_available_int(
+            SetupAgentExecutionService._first_int(
+                usage,
+                "reasoning_tokens",
+                "thoughts_token_count",
+                "thoughtsTokenCount",
+            ),
+            SetupAgentExecutionService._first_int(
+                completion_details,
+                "reasoning_tokens",
+            ),
+            SetupAgentExecutionService._first_int(
+                output_details,
+                "reasoning",
+                "reasoning_tokens",
+            ),
+        )
+        cache_creation_input_tokens = SetupAgentExecutionService._first_available_int(
+            SetupAgentExecutionService._first_int(
+                usage,
+                "cache_creation_input_tokens",
+                "cacheCreationInputTokens",
+            ),
+            SetupAgentExecutionService._first_int(
+                input_details,
+                "cache_creation",
+            ),
+        )
+        cache_read_input_tokens = SetupAgentExecutionService._first_available_int(
+            SetupAgentExecutionService._first_int(
+                usage,
+                "cache_read_input_tokens",
+                "cacheReadInputTokens",
+            ),
+            SetupAgentExecutionService._first_int(input_details, "cache_read"),
+            SetupAgentExecutionService._first_int(prompt_details, "cached_tokens"),
+        )
+
+        if (
+            prompt_tokens is None
+            and completion_tokens is None
+            and total_tokens is None
+            and cached_tokens is None
+            and reasoning_tokens is None
+            and cache_creation_input_tokens is None
+            and cache_read_input_tokens is None
+        ):
+            return None
         return {
-            "prompt_tokens": (
-                int(prompt_tokens_raw) if prompt_tokens_raw is not None else None
-            ),
-            "completion_tokens": (
-                int(completion_tokens_raw)
-                if completion_tokens_raw is not None
-                else None
-            ),
-            "total_tokens": (
-                int(total_tokens_raw) if total_tokens_raw is not None else None
-            ),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "input_tokens": prompt_tokens,
+            "output_tokens": completion_tokens,
+            "cached_tokens": cached_tokens,
+            "reasoning_tokens": reasoning_tokens,
+            "cache_creation_input_tokens": cache_creation_input_tokens,
+            "cache_read_input_tokens": cache_read_input_tokens,
+            "source": "provider_usage_metadata",
+            "token_details": {
+                "prompt_tokens_details": dict(prompt_details),
+                "completion_tokens_details": dict(completion_details),
+                "input_token_details": dict(input_details),
+                "output_token_details": dict(output_details),
+            },
+            "raw_usage": dict(usage),
         }
+
+    @staticmethod
+    def _first_int(mapping: dict[str, Any], *keys: str) -> int | None:
+        for key in keys:
+            value = mapping.get(key)
+            if value is None:
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @staticmethod
+    def _first_available_int(*values: int | None) -> int | None:
+        for value in values:
+            if value is not None:
+                return value
+        return None
 
     def _previous_usage_for_turn(
         self,
         *,
         workspace_id: str,
         step_id: SetupStepId,
-    ) -> dict[str, int | None] | None:
+    ) -> dict[str, Any] | None:
         return self._last_runtime_usage_by_workspace_step.get(
             (workspace_id, step_id.value)
         )
@@ -385,8 +552,28 @@ class SetupAgentExecutionService:
             raw_history_count=len(request.history),
             raw_history_chars=raw_history_chars,
             estimated_input_tokens=governance_metadata.get("estimated_input_tokens"),
+            input_token_count_source=governance_metadata.get(
+                "input_token_count_source"
+            ),
             previous_prompt_tokens=governance_metadata.get("previous_prompt_tokens"),
+            previous_completion_tokens=governance_metadata.get(
+                "previous_completion_tokens"
+            ),
             previous_total_tokens=governance_metadata.get("previous_total_tokens"),
+            previous_cached_tokens=governance_metadata.get("previous_cached_tokens"),
+            previous_reasoning_tokens=governance_metadata.get(
+                "previous_reasoning_tokens"
+            ),
+            previous_cache_creation_input_tokens=governance_metadata.get(
+                "previous_cache_creation_input_tokens"
+            ),
+            previous_cache_read_input_tokens=governance_metadata.get(
+                "previous_cache_read_input_tokens"
+            ),
+            previous_usage_source=governance_metadata.get("previous_usage_source"),
+            previous_token_details=dict(
+                governance_metadata.get("previous_token_details") or {}
+            ),
             user_edit_delta_count=len(request.user_edit_delta_ids),
             prior_stage_handoff_count=len(context_packet.prior_stage_handoffs),
             raw_history_limit=int(governance_metadata.get("raw_history_limit") or 0),
@@ -656,7 +843,13 @@ class SetupAgentExecutionService:
             request=request,
             workspace=workspace,
         )
-        estimated_input_tokens = self._estimate_input_tokens(request)
+        estimated_input_tokens, input_token_count_source = (
+            self._preflight_input_token_count(
+                request=request,
+                model_name=model_name,
+                provider=provider,
+            )
+        )
         previous_usage = self._previous_usage_for_turn(
             workspace_id=workspace.workspace_id,
             step_id=current_step,
@@ -750,6 +943,7 @@ class SetupAgentExecutionService:
             current_step=current_step.value,
             current_stage=current_stage.value if current_stage is not None else None,
             estimated_input_tokens=estimated_input_tokens,
+            input_token_count_source=input_token_count_source,
             previous_usage=previous_usage,
         )
         context_report = self._build_context_report(

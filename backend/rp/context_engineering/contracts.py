@@ -1,4 +1,4 @@
-"""Runtime-agnostic contracts for pre-model context engineering."""
+"""Runtime-agnostic contracts for pre-model context compaction."""
 
 from __future__ import annotations
 
@@ -9,16 +9,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 ContextSourceFamily = Literal[
     "system_instruction",
-    "developer_instruction",
     "user_turn",
     "assistant_turn",
     "tool_outcome",
-    "workspace_truth",
     "runtime_state",
-    "retrieval_card",
-    "sidecar",
     "compact_artifact",
-    "debug_trace",
 ]
 
 ContextVisibility = Literal[
@@ -28,40 +23,9 @@ ContextVisibility = Literal[
     "forbidden",
 ]
 
-ContextStability = Literal[
-    "stable_prefix",
-    "semi_stable",
-    "volatile",
-    "ephemeral",
-]
-
-ContextSerializationFamily = Literal[
-    "system_section",
-    "runtime_overlay",
-    "conversation_message",
-    "tool_observation",
-    "compact_section",
-    "retrieval_section",
-    "metadata",
-]
-
-ContextOperationKind = Literal[
-    "packet_build",
-    "trim",
-    "compact",
-    "summarize",
-    "trace_only",
-]
-
-ContextOperationStatus = Literal[
-    "not_needed",
-    "selected",
-    "reused",
-    "updated",
-    "rebuilt",
-    "fallback",
-    "failed",
-]
+ContextStability = Literal["stable_prefix", "volatile"]
+ContextOperationKind = Literal["compact"]
+ContextOperationStatus = Literal["not_needed", "reused", "updated", "rebuilt", "fallback"]
 
 ContextManifestDecision = Literal[
     "selected",
@@ -81,11 +45,8 @@ class ContextSourceItem(BaseModel):
     source_family: ContextSourceFamily
     source_scope: str | None = None
     sequence_index: int | None = None
-    atomic_group_id: str | None = None
-    must_keep_with: list[str] = Field(default_factory=list)
     visibility: ContextVisibility = "model_visible"
     stability: ContextStability = "volatile"
-    serialization_family: ContextSerializationFamily
     source_ref: str | None = None
     recovery_refs: list[str] = Field(default_factory=list)
     text: str | None = None
@@ -110,25 +71,19 @@ class ContextBudgetPolicy(BaseModel):
     context_window_tokens: int | None = None
     response_reserve_tokens: int = 1024
     operation_budget_tokens: int | None = None
-    recent_window_tokens: int | None = None
     recent_window_items: int | None = None
-    compact_trigger_tokens: int | None = None
-    compact_trigger_items: int | None = None
     source_family_token_caps: dict[str, int] = Field(default_factory=dict)
     source_family_item_caps: dict[str, int] = Field(default_factory=dict)
 
 
 class ContextPlacementPolicy(BaseModel):
-    """Provider-neutral placement slots and atomic-group behavior."""
+    """Provider-neutral placement slots."""
 
     model_config = ConfigDict(extra="forbid")
 
     ordered_slots: list[str]
     slot_by_source_family: dict[str, str] = Field(default_factory=dict)
     stable_prefix_slots: list[str] = Field(default_factory=list)
-    volatile_suffix_slots: list[str] = Field(default_factory=list)
-    metadata_only_slots: list[str] = Field(default_factory=list)
-    breakable_atomic_group_ids: list[str] = Field(default_factory=list)
 
 
 class ContextValidationPolicy(BaseModel):
@@ -147,44 +102,13 @@ class ContextValidationPolicy(BaseModel):
 
 
 class ContextFallbackPolicy(BaseModel):
-    """How the kernel should behave when compact output cannot be trusted."""
+    """Single deterministic fallback signal used by initial compact callers."""
 
     model_config = ConfigDict(extra="forbid")
 
-    mode: Literal["deterministic_fallback", "skip_section", "fail_closed"]
+    mode: Literal["deterministic_fallback"] = "deterministic_fallback"
     fallback_summary_line_limit: int = 6
     user_visible_error_code: str | None = None
-
-
-class ContextProviderProfile(BaseModel):
-    """Provider capability hints that never become runtime truth."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    provider_name: str
-    model_name: str | None = None
-    context_window_tokens: int | None = None
-    supports_prompt_cache: bool = False
-    supports_provider_managed_state: bool = False
-    thinking_or_reasoning_blocks: bool = False
-    tool_result_constraints: dict[str, Any] = Field(default_factory=dict)
-    known_overflow_signals: list[str] = Field(default_factory=list)
-
-
-class ContextOverflowSignal(BaseModel):
-    """Normalized provider overflow classification."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    provider_name: str
-    signal_kind: Literal[
-        "context_length_error",
-        "silent_truncation_risk",
-        "tool_result_too_large",
-        "unknown",
-    ]
-    raw_message: str | None = None
-    recommended_action: Literal["compact_retry", "trim_retry", "fail_closed"]
 
 
 class ContextValidationIssue(BaseModel):
@@ -209,11 +133,11 @@ class ContextValidationReport(BaseModel):
 
 
 class ContextFallbackReport(BaseModel):
-    """Fallback evidence attached to an operation result or artifact."""
+    """Fallback evidence attached to an operation result."""
 
     model_config = ConfigDict(extra="forbid")
 
-    mode: Literal["deterministic_fallback", "skip_section", "fail_closed"]
+    mode: Literal["deterministic_fallback"] = "deterministic_fallback"
     reason: str
     used: bool = True
     user_visible_error_code: str | None = None
@@ -248,7 +172,6 @@ class ContextManifestItem(BaseModel):
     reason: str
     slot: str | None = None
     estimated_tokens: int | None = None
-    atomic_group_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -305,12 +228,12 @@ class ContextTrace(BaseModel):
 
 
 class ContextArtifact(BaseModel):
-    """Opaque compact or operation artifact produced by kernel or adapter."""
+    """Opaque compact artifact produced by a model runner or adapter."""
 
     model_config = ConfigDict(extra="forbid")
 
     artifact_id: str
-    artifact_kind: Literal["compact_summary", "operation_summary"]
+    artifact_kind: Literal["compact_summary"]
     schema_id: str
     schema_version: str
     source_fingerprint: str
@@ -318,7 +241,7 @@ class ContextArtifact(BaseModel):
     payload: dict[str, Any]
     recovery_refs: list[str] = Field(default_factory=list)
     first_kept_source_item_id: str | None = None
-    created_by: Literal["deterministic", "model", "adapter"]
+    created_by: Literal["model", "adapter"]
     validation_report: ContextValidationReport
     fallback_report: ContextFallbackReport | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -338,7 +261,7 @@ class ContextSelectionResult(BaseModel):
 
 
 class ContextOperationRequest(BaseModel):
-    """Self-contained request created by a runtime adapter."""
+    """Self-contained compact request created by a runtime adapter."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -350,7 +273,6 @@ class ContextOperationRequest(BaseModel):
     placement_policy: ContextPlacementPolicy
     validation_policy: ContextValidationPolicy
     fallback_policy: ContextFallbackPolicy
-    provider_profile: ContextProviderProfile | None = None
     previous_artifact: ContextArtifact | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -382,7 +304,7 @@ class ContextCompactPromptRequest(BaseModel):
 
 
 class ContextOperationResult(BaseModel):
-    """Final output for a selection, trim, compact, or summarize operation."""
+    """Final output for a compact operation."""
 
     model_config = ConfigDict(extra="forbid")
 

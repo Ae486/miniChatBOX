@@ -26,7 +26,6 @@ def _item(item_id: str = "item-1") -> ContextSourceItem:
     return ContextSourceItem(
         source_item_id=item_id,
         source_family="user_turn",
-        serialization_family="conversation_message",
         text="hello",
     )
 
@@ -52,22 +51,21 @@ def test_unknown_fields_are_rejected_for_policy_models():
         ContextBudgetPolicy(extra_field=True)  # type: ignore[call-arg]
 
 
-def test_source_item_preserves_scope_ordering_and_atomic_metadata():
+def test_source_item_preserves_scope_ordering_and_refs():
     item = ContextSourceItem(
         source_item_id="turn-1",
         source_family="assistant_turn",
         source_scope="setup_stage:foundation",
         sequence_index=3,
-        atomic_group_id="tool-pair-1",
-        must_keep_with=["turn-2"],
-        serialization_family="conversation_message",
+        source_ref="setup:foundation:history:3",
+        recovery_refs=["draft:foundation"],
         text="assistant reply",
     )
 
     assert item.source_scope == "setup_stage:foundation"
     assert item.sequence_index == 3
-    assert item.atomic_group_id == "tool-pair-1"
-    assert item.must_keep_with == ["turn-2"]
+    assert item.source_ref == "setup:foundation:history:3"
+    assert item.recovery_refs == ["draft:foundation"]
 
 
 def test_read_manifest_separates_decision_buckets():

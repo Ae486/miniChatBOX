@@ -28,7 +28,6 @@ def _item(
         source_family="user_turn",
         source_scope=scope,
         sequence_index=sequence_index,
-        serialization_family="conversation_message",
         source_ref=f"ref:{item_id}",
         recovery_refs=["draft:one"],
         text=text,

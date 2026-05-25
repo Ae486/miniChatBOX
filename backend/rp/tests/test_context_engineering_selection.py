@@ -20,18 +20,13 @@ def _item(
     sequence_index: int = 0,
     visibility: str = "model_visible",
     estimated_tokens: int = 1,
-    atomic_group_id: str | None = None,
 ) -> ContextSourceItem:
     return ContextSourceItem(
         source_item_id=item_id,
         source_family=family,  # type: ignore[arg-type]
         source_scope="scope",
         sequence_index=sequence_index,
-        atomic_group_id=atomic_group_id,
         visibility=visibility,  # type: ignore[arg-type]
-        serialization_family="conversation_message"
-        if family in {"user_turn", "assistant_turn"}
-        else "metadata",
         text=text,
         estimated_tokens=estimated_tokens,
     )
@@ -44,7 +39,6 @@ def _request(
     operation_budget_tokens: int | None = None,
     family_item_caps: dict[str, int] | None = None,
     family_token_caps: dict[str, int] | None = None,
-    breakable_atomic_group_ids: list[str] | None = None,
 ) -> ContextOperationRequest:
     return ContextOperationRequest(
         operation_id="op-selection",
@@ -57,9 +51,7 @@ def _request(
             source_family_item_caps=family_item_caps,
             source_family_token_caps=family_token_caps,
         ),
-        placement_policy=default_placement_policy(
-            breakable_atomic_group_ids=breakable_atomic_group_ids
-        ),
+        placement_policy=default_placement_policy(),
         validation_policy=default_validation_policy(),
         fallback_policy=default_fallback_policy(),
     )
@@ -123,17 +115,23 @@ def test_operation_budget_omits_when_budget_is_exceeded():
         _request(
             [
                 _item(
-                    "sidecar-1", family="sidecar", sequence_index=0, estimated_tokens=2
+                    "state-1",
+                    family="runtime_state",
+                    sequence_index=0,
+                    estimated_tokens=2,
                 ),
                 _item(
-                    "sidecar-2", family="sidecar", sequence_index=1, estimated_tokens=2
+                    "state-2",
+                    family="runtime_state",
+                    sequence_index=1,
+                    estimated_tokens=2,
                 ),
             ],
             operation_budget_tokens=2,
         )
     )
 
-    assert [item.source_item_id for item in result.selected_items] == ["sidecar-1"]
+    assert [item.source_item_id for item in result.selected_items] == ["state-1"]
     assert result.read_manifest.omitted[0].reason == "operation_budget_exceeded"
 
 
@@ -165,56 +163,6 @@ def test_recent_raw_window_keeps_latest_conversation_items_and_drops_only_raw():
         item.source_family in {"user_turn", "assistant_turn"}
         for item in result.compactable_dropped_items
     )
-
-
-def test_atomic_groups_are_kept_together_by_default():
-    result = select_context_sections(
-        _request(
-            [
-                _item("group-1", family="sidecar", atomic_group_id="g1"),
-                _item("group-2", family="sidecar", atomic_group_id="g1"),
-            ],
-            operation_budget_tokens=2,
-        )
-    )
-
-    assert [item.source_item_id for item in result.selected_items] == [
-        "group-1",
-        "group-2",
-    ]
-
-
-def test_atomic_group_omits_whole_group_when_not_breakable():
-    result = select_context_sections(
-        _request(
-            [
-                _item("group-1", family="sidecar", atomic_group_id="g1"),
-                _item("group-2", family="sidecar", atomic_group_id="g1"),
-            ],
-            operation_budget_tokens=1,
-        )
-    )
-
-    assert not result.selected_items
-    assert {item.reason for item in result.read_manifest.omitted} == {
-        "atomic_group_omitted"
-    }
-
-
-def test_breakable_atomic_group_records_break_reason():
-    result = select_context_sections(
-        _request(
-            [
-                _item("group-1", family="sidecar", atomic_group_id="g1"),
-                _item("group-2", family="sidecar", atomic_group_id="g1"),
-            ],
-            operation_budget_tokens=1,
-            breakable_atomic_group_ids=["g1"],
-        )
-    )
-
-    assert [item.source_item_id for item in result.selected_items] == ["group-1"]
-    assert result.read_manifest.omitted[0].reason == "atomic_group_broken_by_policy"
 
 
 def test_section_order_follows_placement_policy():

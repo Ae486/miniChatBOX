@@ -7,6 +7,7 @@ from typing import Any
 
 from rp.context_engineering.compaction import (
     CompactPromptRunner,
+    ContextCompactPromptFailure,
     decide_compaction_action,
     run_compact_operation,
 )
@@ -46,7 +47,6 @@ def _item(index: int, *, recovery_refs: list[str] | None = None) -> ContextSourc
         source_family="user_turn",
         source_scope="scope",
         sequence_index=index,
-        serialization_family="conversation_message",
         text=f"message {index}",
         recovery_refs=list(recovery_refs or []),
     )
@@ -56,7 +56,6 @@ def _request(
     dropped: list[ContextSourceItem],
     *,
     previous_artifact: ContextArtifact | None = None,
-    fallback_mode: str = "deterministic_fallback",
 ) -> ContextOperationRequest:
     return ContextOperationRequest(
         operation_id="op-compact",
@@ -70,8 +69,6 @@ def _request(
             forbidden_payload_fields=["analysis", "scratchpad"],
             metadata={
                 "allowed_payload_fields": [
-                    "source_fingerprint",
-                    "source_message_count",
                     "summary_lines",
                     "draft_refs",
                     "recovery_hints",
@@ -82,7 +79,7 @@ def _request(
                 ]
             },
         ),
-        fallback_policy=default_fallback_policy(mode=fallback_mode),
+        fallback_policy=default_fallback_policy(),
         previous_artifact=previous_artifact,
     )
 
@@ -163,6 +160,42 @@ def test_valid_prefix_updates_from_previous_artifact_plus_delta():
     ]
     assert result.artifact is not None
     assert result.artifact.first_kept_source_item_id == "turn-3"
+    assert "source_fingerprint" not in result.artifact.payload
+    assert "source_message_count" not in result.artifact.payload
+    assert result.artifact.source_item_count == len(dropped)
+
+
+def test_generic_model_payload_does_not_receive_setup_metadata():
+    dropped = [_item(0), _item(1)]
+    runner = _Runner({"summary": "ok"})
+    request = ContextOperationRequest(
+        operation_id="generic-compact",
+        operation_kind="compact",
+        runtime_family="generic",
+        source_items=dropped,
+        budget_policy=default_budget_policy(),
+        placement_policy=default_placement_policy(),
+        validation_policy=default_validation_policy(
+            schema_id="generic_summary.v1",
+            metadata={"allowed_payload_fields": ["summary"]},
+        ),
+        fallback_policy=default_fallback_policy(),
+    )
+
+    result = asyncio.run(
+        run_compact_operation(
+            request=request,
+            dropped_items=dropped,
+            first_kept_source_item_id="turn-2",
+            compact_prompt_runner=runner,
+        )
+    )
+
+    assert result.status == "rebuilt"
+    assert result.artifact is not None
+    assert result.artifact.payload == {"summary": "ok"}
+    assert result.artifact.source_fingerprint
+    assert result.artifact.source_item_count == 2
 
 
 def test_invalid_previous_artifact_is_rebuilt_not_reused():
@@ -220,7 +253,7 @@ def test_invalid_prefix_rebuilds_from_full_dropped_set():
     ]
 
 
-def test_invalid_model_payload_uses_deterministic_fallback():
+def test_invalid_model_payload_records_fallback_without_kernel_payload():
     dropped = [_item(0)]
     runner = _Runner({"summary_lines": ["bad"], "analysis": "scratchpad"})
 
@@ -234,40 +267,56 @@ def test_invalid_model_payload_uses_deterministic_fallback():
     )
 
     assert result.status == "fallback"
-    assert result.artifact is not None
-    assert result.artifact.created_by == "deterministic"
+    assert result.artifact is None
     assert result.fallback_report is not None
     assert "forbidden_payload_field" in result.fallback_report.reason
 
 
-def test_fail_closed_policy_returns_failed_result():
+def test_known_runner_failure_records_fallback_without_swallowing_all_exceptions():
+    class _FailingRunner(CompactPromptRunner):
+        async def run_compact_prompt(
+            self,
+            request: ContextCompactPromptRequest,
+        ) -> dict[str, Any]:
+            raise ContextCompactPromptFailure("model_output_not_json")
+
     dropped = [_item(0)]
-    runner = _Runner({"analysis": "scratchpad"})
-
-    result = asyncio.run(
-        run_compact_operation(
-            request=_request(dropped, fallback_mode="fail_closed"),
-            dropped_items=dropped,
-            first_kept_source_item_id=None,
-            compact_prompt_runner=runner,
-        )
-    )
-
-    assert result.status == "failed"
-    assert result.artifact is None
-
-
-def test_fallback_artifact_carries_only_allowed_recovery_refs():
-    dropped = [_item(0, recovery_refs=["draft:story_config", "bad:ref"])]
 
     result = asyncio.run(
         run_compact_operation(
             request=_request(dropped),
             dropped_items=dropped,
-            first_kept_source_item_id="turn-1",
+            first_kept_source_item_id=None,
+            compact_prompt_runner=_FailingRunner(),
         )
     )
 
-    assert result.artifact is not None
-    assert result.artifact.recovery_refs == ["draft:story_config"]
-    assert result.artifact.payload["draft_refs"] == ["draft:story_config"]
+    assert result.status == "fallback"
+    assert result.artifact is None
+    assert result.fallback_report is not None
+    assert result.fallback_report.reason == "model_output_not_json"
+
+
+def test_unexpected_runner_exception_propagates():
+    class _BuggyRunner(CompactPromptRunner):
+        async def run_compact_prompt(
+            self,
+            request: ContextCompactPromptRequest,
+        ) -> dict[str, Any]:
+            raise RuntimeError("programming bug")
+
+    dropped = [_item(0, recovery_refs=["draft:story_config", "bad:ref"])]
+
+    try:
+        asyncio.run(
+            run_compact_operation(
+                request=_request(dropped),
+                dropped_items=dropped,
+                first_kept_source_item_id="turn-1",
+                compact_prompt_runner=_BuggyRunner(),
+            )
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "programming bug"
+    else:
+        raise AssertionError("expected unexpected runner exception to propagate")

@@ -5,6 +5,12 @@ from __future__ import annotations
 import pytest
 
 from rp.agent_runtime.contracts import SetupCapabilityGuidanceFragment
+from rp.agent_runtime.prompts.setup_agent import (
+    SYSTEM_PROMPT_TEMPLATE,
+    capability_guidance_text,
+    compact_prompt_system_prompt,
+    stage_objective_text,
+)
 from rp.agent_runtime.profiles import (
     SETUP_AGENT_VISIBLE_TOOLS,
     build_setup_agent_capability_plan,
@@ -60,6 +66,16 @@ PROMPT_TOOL_NAME_CANDIDATES = {
     "setup.world_background.delete_entry",
     "proposal.submit",
 }
+
+
+def test_setup_agent_prompt_assets_are_centralized_python_modules():
+    assert "Fact grounding and creative design:" in SYSTEM_PROMPT_TEMPLATE
+    assert "{workspace_snapshot}" in SYSTEM_PROMPT_TEMPLATE
+    assert "named setup object" in capability_guidance_text(
+        "setup_session_memory.search"
+    )
+    assert "world background" in stage_objective_text(SetupStageId.WORLD_BACKGROUND)
+    assert "SetupStageCompactPrompt" in compact_prompt_system_prompt()
 
 
 def test_character_design_stage_loads_skill_pack_into_system_prompt():
@@ -144,6 +160,26 @@ def test_no_skill_pack_when_current_stage_is_none_uses_capability_guidance():
     assert "setup.patch.foundation_entry" not in prompt
     assert "setup.truth.write" not in prompt
     assert "proposal.submit" not in prompt
+
+
+def test_system_prompt_separates_fact_grounding_from_creative_proposals():
+    service = SetupAgentPromptService()
+    packet = _packet(current_stage=SetupStageId.WORLD_BACKGROUND)
+
+    prompt = service.build_system_prompt(
+        mode=StoryMode.LONGFORM,
+        current_step=SetupStepId.FOUNDATION,
+        current_stage=SetupStageId.WORLD_BACKGROUND,
+        context_packet=packet,
+    )
+
+    assert "Fact grounding and creative design:" in prompt
+    assert "Confirmed setup facts must come from visible workspace context" in prompt
+    assert "Indexes, navigation summaries, compact summaries" in prompt
+    assert "Before designing around a named setup object" in prompt
+    assert "Do not ask the user to restate recoverable setup facts" in prompt
+    assert "present new details as proposals" in prompt
+    assert "Do not reinterpret an existing setup name as a new invention" in prompt
 
 
 @pytest.mark.parametrize(
@@ -269,6 +305,27 @@ def test_prompt_mentions_only_active_capability_tools_for_world_background():
     assert "setup.truth_index.search" not in mentioned_tools
     assert "setup.truth_index.read_refs" not in mentioned_tools
     assert "proposal.submit" not in mentioned_tools
+
+
+def test_memory_capability_guidance_mentions_named_object_grounding():
+    plan = build_setup_agent_capability_plan(
+        SetupStepId.FOUNDATION.value,
+        current_stage=SetupStageId.WORLD_BACKGROUND.value,
+    )
+
+    memory_guidance = next(
+        fragment.text
+        for fragment in plan.prompt_guidance_fragments
+        if fragment.fragment_id == "setup_session_memory.search"
+    )
+
+    assert "named setup object" in memory_guidance
+    assert "before creative design" in memory_guidance
+    assert (
+        "Search results and navigation_summary are navigation only" in memory_guidance
+    )
+    assert "setup.memory.open" in memory_guidance
+    assert "clearly framed as proposals" in memory_guidance
 
 
 def test_prompt_filters_inactive_guidance_from_supplied_capability_plan():

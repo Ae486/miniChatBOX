@@ -3,18 +3,28 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Protocol
 
 from models.mcp_config import McpToolInfo
-from services.mcp_manager import McpManager
 
 from .contracts import RuntimeToolCall, RuntimeToolResult
+
+
+class RuntimeToolManagerLike(Protocol):
+    def get_all_tools(self) -> list[McpToolInfo]: ...
+
+    async def call_tool_by_qualified_name(
+        self,
+        *,
+        qualified_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]: ...
 
 
 class RuntimeToolRegistryView:
     """Filter current MCP/local tools into runtime-visible definitions."""
 
-    def __init__(self, *, mcp_manager: McpManager) -> None:
+    def __init__(self, *, mcp_manager: RuntimeToolManagerLike) -> None:
         self._mcp_manager = mcp_manager
 
     def get_visible_tools(self, *, visible_tool_names: list[str]) -> list[McpToolInfo]:
@@ -55,7 +65,7 @@ class RuntimeToolRegistryView:
 class RuntimeToolExecutor:
     """Runtime-facing wrapper over McpManager/local tool providers."""
 
-    def __init__(self, *, mcp_manager: McpManager) -> None:
+    def __init__(self, *, mcp_manager: RuntimeToolManagerLike) -> None:
         self._mcp_manager = mcp_manager
         self._registry = RuntimeToolRegistryView(mcp_manager=mcp_manager)
 

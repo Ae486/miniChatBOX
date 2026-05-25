@@ -66,6 +66,10 @@ from .ragas_adapter import (
     result_to_records,
     run_ragas_evaluation,
 )
+from .ragas_generation import (
+    build_ragas_response_generation_config,
+    generate_eval_rag_response,
+)
 from .ragas_reporting import build_ragas_artifacts, build_ragas_report
 from .ragas_runtime import resolve_ragas_runtime_bindings
 from .ragas_samples import build_ragas_sample_from_eval_result
@@ -1155,6 +1159,7 @@ class EvalRunner:
                 else None
             ),
         )
+        generation_config = build_ragas_response_generation_config(env)
 
         samples = []
         records: list[dict] = []
@@ -1162,6 +1167,7 @@ class EvalRunner:
         status = "not_requested"
         available = ragas_available()
         runtime_metadata: dict = {}
+        generation_metadata: dict = {}
 
         if config.enabled:
             if not available:
@@ -1177,6 +1183,28 @@ class EvalRunner:
                         response=config.response,
                         reference=config.reference,
                     )
+                    if generation_config.enabled:
+                        if config.response is not None:
+                            generation_metadata = {
+                                "enabled": True,
+                                "status": "skipped_explicit_response",
+                            }
+                        else:
+                            generated_response = generate_eval_rag_response(
+                                sample=sample,
+                                config=generation_config,
+                            )
+                            generation_metadata = dict(generated_response.metadata)
+                            sample = sample.model_copy(
+                                deep=True,
+                                update={
+                                    "response": generated_response.response,
+                                    "metadata": {
+                                        **sample.metadata,
+                                        "ragas_generation": generation_metadata,
+                                    },
+                                },
+                            )
                     samples = [sample]
                     runtime = resolve_ragas_runtime_bindings(
                         session=self._session,
@@ -1222,6 +1250,8 @@ class EvalRunner:
         )
         if runtime_metadata:
             report["runtime"] = runtime_metadata
+        if generation_metadata:
+            report["generation"] = generation_metadata
         if bool(env.get("sync_ragas_to_langfuse")):
             self._sync_ragas_report_to_langfuse(result=result, report=report)
         return build_ragas_artifacts(

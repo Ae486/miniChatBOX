@@ -131,7 +131,8 @@ from rp.services.worker_scheduler_service import WorkerSchedulerService
 from rp.services.writing_packet_builder import WritingPacketBuilder
 from rp.services.writing_worker_execution_service import WritingWorkerExecutionService
 from rp.tools.setup_tool_provider import SetupToolProvider
-from services.mcp_manager import McpManager
+from rp.tools.setup_scoped_mcp_manager import SetupScopedMcpManager
+from services.mcp_manager import McpManager, get_mcp_manager
 
 
 class RpRuntimeFactory:
@@ -180,7 +181,12 @@ class RpRuntimeFactory:
             runtime_state_service=self._build_setup_runtime_state_service(),
         )
 
-    def _build_setup_mcp_manager(self, *, story_id: str) -> McpManager:
+    def _build_setup_mcp_manager(
+        self,
+        *,
+        story_id: str,
+        external_tool_allowlist: list[str] | None = None,
+    ):
         workspace_service = self._build_setup_workspace_service()
         context_builder = self._build_setup_context_builder(
             workspace_service=workspace_service
@@ -194,18 +200,41 @@ class RpRuntimeFactory:
                 runtime_state_service=runtime_state_service,
             )
         )
-        return McpManager(
+        setup_tool_manager = McpManager(
             storage_path=None,
             local_tool_provider_registry=registry,
             register_default_local_providers=False,
+        )
+        if not external_tool_allowlist:
+            return setup_tool_manager
+        return SetupScopedMcpManager(
+            setup_tool_manager=setup_tool_manager,
+            external_mcp_manager=get_mcp_manager(),
+            external_tool_allowlist=external_tool_allowlist,
         )
 
     def _build_setup_runtime_executor(self) -> RpAgentRuntimeExecutor:
         return RpAgentRuntimeExecutor(
             tool_executor_factory=lambda turn_input: RuntimeToolExecutor(
                 mcp_manager=self._build_setup_mcp_manager(
-                    story_id=str(turn_input.story_id or "")
+                    story_id=str(turn_input.story_id or ""),
+                    external_tool_allowlist=self._external_tool_allowlist(
+                        turn_input.metadata
+                    ),
                 )
+            )
+        )
+
+    @staticmethod
+    def _external_tool_allowlist(metadata: dict) -> list[str]:
+        raw_items = metadata.get("external_mcp_tool_allowlist")
+        if not isinstance(raw_items, list):
+            return []
+        return list(
+            dict.fromkeys(
+                item.strip()
+                for item in raw_items
+                if isinstance(item, str) and item.strip()
             )
         )
 
@@ -416,7 +445,9 @@ class RpRuntimeFactory:
             authoritative_state_view_service=authoritative_state_view_service,
             projection_state_service=projection_state_service,
             memory_os_factory=(
-                lambda story_id, session_id=None, runtime_identity=None: MemoryOsService(
+                lambda story_id,
+                session_id=None,
+                runtime_identity=None: MemoryOsService(
                     retrieval_broker=RetrievalBroker(
                         default_story_id=story_id,
                         runtime_identity=runtime_identity,

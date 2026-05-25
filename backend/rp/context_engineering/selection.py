@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from typing import cast
 
 from rp.context_engineering.contracts import (
     ContextBudgetDecision,
@@ -12,23 +12,14 @@ from rp.context_engineering.contracts import (
     ContextReadManifest,
     ContextSelectionResult,
     ContextSourceItem,
+    ContextStability,
 )
-from rp.context_engineering.estimation import (
-    estimate_source_item_tokens,
-    estimate_source_items_tokens,
-)
+from rp.context_engineering.estimation import estimate_source_item_tokens
 from rp.context_engineering.policies import DEFAULT_SECTION_TITLE
 from rp.context_engineering.serialization import build_section_for_items
 from rp.context_engineering.tracing import build_manifest_item, build_trace
 
 _CONVERSATION_FAMILIES = {"user_turn", "assistant_turn"}
-
-
-@dataclass(frozen=True)
-class _Group:
-    group_id: str
-    items: list[ContextSourceItem]
-    breakable: bool
 
 
 def select_context_sections(
@@ -97,18 +88,12 @@ def select_context_sections(
         budget_decisions=budget_decisions,
         omitted_ids=omitted_ids,
     )
-
     recent_ids = _recent_raw_item_ids(request, capped_candidates)
-    group_by_item = _build_groups(request, capped_candidates, recent_ids)
-    recent_ids = {
-        grouped_item.source_item_id
-        for item_id in recent_ids
-        for grouped_item in group_by_item[item_id].items
-    }
 
     selected_items: list[ContextSourceItem] = []
     selected_ids: set[str] = set()
     compactable_dropped_items: list[ContextSourceItem] = []
+    selected_token_count = 0
 
     for item in capped_candidates:
         if item.source_item_id in selected_ids or item.source_item_id in omitted_ids:
@@ -140,33 +125,43 @@ def select_context_sections(
             omitted_ids.add(item.source_item_id)
             continue
 
-        group = group_by_item[item.source_item_id]
-        if group.breakable:
-            _try_select_breakable_item(
-                request=request,
-                item=item,
-                selected_items=selected_items,
-                selected_ids=selected_ids,
-                manifest=manifest,
-                budget_decisions=budget_decisions,
-                protected=item.source_item_id in recent_ids,
-                group=group,
-                omitted_ids=omitted_ids,
+        estimate = estimate_source_item_tokens(item)
+        budget = request.budget_policy.operation_budget_tokens
+        protected = item.source_item_id in recent_ids
+        if (
+            budget is not None
+            and not protected
+            and selected_token_count + estimate > int(budget)
+        ):
+            manifest.omitted.append(
+                build_manifest_item(
+                    item,
+                    decision="omitted",
+                    reason="operation_budget_exceeded",
+                    slot=slot,
+                    estimated_tokens=estimate,
+                )
             )
+            budget_decisions.append(
+                ContextBudgetDecision(
+                    decision="omit",
+                    reason="operation_budget_exceeded",
+                    source_item_id=item.source_item_id,
+                    slot=slot,
+                    estimated_tokens=estimate,
+                )
+            )
+            omitted_ids.add(item.source_item_id)
             continue
-
-        if any(peer.source_item_id in selected_ids for peer in group.items):
-            continue
-        _try_select_group(
+        _select_item(
             request=request,
-            group=group,
+            item=item,
             selected_items=selected_items,
             selected_ids=selected_ids,
             manifest=manifest,
-            budget_decisions=budget_decisions,
-            protected=any(peer.source_item_id in recent_ids for peer in group.items),
-            omitted_ids=omitted_ids,
+            reason="selected",
         )
+        selected_token_count += estimate
 
     recent_raw_items = [
         item
@@ -281,182 +276,12 @@ def _recent_raw_item_ids(
         ),
         reverse=True,
     )
-    selected: list[ContextSourceItem] = []
-    token_total = 0
     item_limit = request.budget_policy.recent_window_items
-    token_limit = request.budget_policy.recent_window_tokens
-    for item in recent_by_sequence:
-        if item_limit is not None and len(selected) >= int(item_limit):
-            break
-        estimate = estimate_source_item_tokens(item)
-        if (
-            token_limit is not None
-            and selected
-            and token_total + estimate > int(token_limit)
-        ):
-            break
-        selected.append(item)
-        token_total += estimate
-    return {item.source_item_id for item in selected}
-
-
-def _build_groups(
-    request: ContextOperationRequest,
-    candidates: Sequence[ContextSourceItem],
-    recent_ids: set[str],
-) -> dict[str, _Group]:
-    item_by_id = {item.source_item_id: item for item in candidates}
-    parent = {item.source_item_id: item.source_item_id for item in candidates}
-
-    def find(item_id: str) -> str:
-        while parent[item_id] != item_id:
-            parent[item_id] = parent[parent[item_id]]
-            item_id = parent[item_id]
-        return item_id
-
-    def union(left: str, right: str) -> None:
-        if left not in parent or right not in parent:
-            return
-        root_left = find(left)
-        root_right = find(right)
-        if root_left != root_right:
-            parent[root_right] = root_left
-
-    by_atomic_group: dict[str, list[str]] = defaultdict(list)
-    for item in candidates:
-        if item.atomic_group_id:
-            by_atomic_group[item.atomic_group_id].append(item.source_item_id)
-        for peer_id in item.must_keep_with:
-            union(item.source_item_id, peer_id)
-    for ids in by_atomic_group.values():
-        for peer_id in ids[1:]:
-            union(ids[0], peer_id)
-
-    grouped_ids: dict[str, list[str]] = defaultdict(list)
-    for item_id in item_by_id:
-        grouped_ids[find(item_id)].append(item_id)
-
-    group_by_item: dict[str, _Group] = {}
-    breakable_ids = set(request.placement_policy.breakable_atomic_group_ids)
-    for ids in grouped_ids.values():
-        items = sorted(
-            (item_by_id[item_id] for item_id in ids),
-            key=lambda i: _sort_key(request, i),
-        )
-        atomic_ids = {item.atomic_group_id for item in items if item.atomic_group_id}
-        breakable = bool(atomic_ids and atomic_ids <= breakable_ids)
-        group_id = next(iter(sorted(atomic_ids)), items[0].source_item_id)
-        if any(item.source_item_id in recent_ids for item in items):
-            group_items = items
-        else:
-            group_items = items
-        group = _Group(group_id=group_id, items=group_items, breakable=breakable)
-        for item in group_items:
-            group_by_item[item.source_item_id] = group
-    return group_by_item
-
-
-def _try_select_group(
-    *,
-    request: ContextOperationRequest,
-    group: _Group,
-    selected_items: list[ContextSourceItem],
-    selected_ids: set[str],
-    manifest: ContextReadManifest,
-    budget_decisions: list[ContextBudgetDecision],
-    protected: bool,
-    omitted_ids: set[str],
-) -> None:
-    estimate = estimate_source_items_tokens(group.items)
-    budget = request.budget_policy.operation_budget_tokens
-    current_tokens = estimate_source_items_tokens(selected_items)
-    if budget is not None and not protected and current_tokens + estimate > int(budget):
-        for item in group.items:
-            manifest.omitted.append(
-                build_manifest_item(
-                    item,
-                    decision="omitted",
-                    reason="atomic_group_omitted"
-                    if len(group.items) > 1
-                    else "operation_budget_exceeded",
-                    slot=_slot_for_item(request, item),
-                    estimated_tokens=estimate_source_item_tokens(item),
-                )
-            )
-            budget_decisions.append(
-                ContextBudgetDecision(
-                    decision="omit",
-                    reason="atomic_group_omitted"
-                    if len(group.items) > 1
-                    else "operation_budget_exceeded",
-                    source_item_id=item.source_item_id,
-                    slot=_slot_for_item(request, item),
-                    estimated_tokens=estimate_source_item_tokens(item),
-                )
-            )
-            omitted_ids.add(item.source_item_id)
-        return
-    for item in group.items:
-        _select_item(
-            request=request,
-            item=item,
-            selected_items=selected_items,
-            selected_ids=selected_ids,
-            manifest=manifest,
-            reason="selected",
-        )
-
-
-def _try_select_breakable_item(
-    *,
-    request: ContextOperationRequest,
-    item: ContextSourceItem,
-    selected_items: list[ContextSourceItem],
-    selected_ids: set[str],
-    manifest: ContextReadManifest,
-    budget_decisions: list[ContextBudgetDecision],
-    protected: bool,
-    group: _Group,
-    omitted_ids: set[str],
-) -> None:
-    estimate = estimate_source_item_tokens(item)
-    budget = request.budget_policy.operation_budget_tokens
-    current_tokens = estimate_source_items_tokens(selected_items)
-    if budget is not None and not protected and current_tokens + estimate > int(budget):
-        peer_selected = any(peer.source_item_id in selected_ids for peer in group.items)
-        reason = (
-            "atomic_group_broken_by_policy"
-            if peer_selected
-            else "operation_budget_exceeded"
-        )
-        manifest.omitted.append(
-            build_manifest_item(
-                item,
-                decision="omitted",
-                reason=reason,
-                slot=_slot_for_item(request, item),
-                estimated_tokens=estimate,
-            )
-        )
-        budget_decisions.append(
-            ContextBudgetDecision(
-                decision="omit",
-                reason=reason,
-                source_item_id=item.source_item_id,
-                slot=_slot_for_item(request, item),
-                estimated_tokens=estimate,
-            )
-        )
-        omitted_ids.add(item.source_item_id)
-        return
-    _select_item(
-        request=request,
-        item=item,
-        selected_items=selected_items,
-        selected_ids=selected_ids,
-        manifest=manifest,
-        reason="selected",
-    )
+    if item_limit is None:
+        return {item.source_item_id for item in recent_by_sequence}
+    return {
+        item.source_item_id for item in recent_by_sequence[: max(int(item_limit), 0)]
+    }
 
 
 def _select_item(
@@ -494,10 +319,11 @@ def _build_sections(
         items = by_slot.get(slot)
         if not items:
             continue
-        stability = (
+        stability = cast(
+            ContextStability,
             "stable_prefix"
             if slot in request.placement_policy.stable_prefix_slots
-            else "volatile"
+            else "volatile",
         )
         sections.append(
             build_section_for_items(
@@ -505,7 +331,7 @@ def _build_sections(
                 slot=slot,
                 title=slot.replace("_", " ").title() or DEFAULT_SECTION_TITLE,
                 items=items,
-                stability=stability,  # type: ignore[arg-type]
+                stability=stability,
             )
         )
     return sections
@@ -516,7 +342,7 @@ def _slot_for_item(request: ContextOperationRequest, item: ContextSourceItem) ->
         return "metadata_only"
     return request.placement_policy.slot_by_source_family.get(
         str(item.source_family),
-        "sidecar",
+        "metadata_only",
     )
 
 

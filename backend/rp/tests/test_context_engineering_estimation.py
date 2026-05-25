@@ -30,8 +30,7 @@ def test_payload_estimate_is_stable_under_dict_key_ordering():
 def test_explicit_source_item_estimate_wins():
     item = ContextSourceItem(
         source_item_id="item-1",
-        source_family="sidecar",
-        serialization_family="metadata",
+        source_family="runtime_state",
         text="a" * 100,
         estimated_tokens=7,
     )
@@ -44,13 +43,11 @@ def test_aggregate_estimate_sums_items():
         ContextSourceItem(
             source_item_id="item-1",
             source_family="user_turn",
-            serialization_family="conversation_message",
             text="1234",
         ),
         ContextSourceItem(
             source_item_id="item-2",
             source_family="assistant_turn",
-            serialization_family="conversation_message",
             text="12345",
         ),
     ]

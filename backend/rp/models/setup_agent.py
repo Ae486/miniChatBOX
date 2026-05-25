@@ -1,4 +1,5 @@
 """SetupAgent execution request and response models."""
+
 from __future__ import annotations
 
 from typing import Literal
@@ -30,6 +31,7 @@ class SetupAgentTurnRequest(BaseModel):
     target_stage: SetupStageId | None = None
     history: list[SetupAgentDialogueMessage] = Field(default_factory=list)
     user_edit_delta_ids: list[str] = Field(default_factory=list)
+    external_mcp_tool_allowlist: list[str] = Field(default_factory=list)
     user_prompt: str
 
 

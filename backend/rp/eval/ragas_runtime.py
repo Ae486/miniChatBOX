@@ -217,6 +217,10 @@ def _build_ragas_embeddings(*, binding: _ResolvedModelBinding) -> ProjectRagasEm
 
 
 def _select_instructor_mode(model_entry: ModelRegistryEntry) -> instructor.Mode:
+    model_name = str(model_entry.model_name or "").strip().lower()
+    display_name = str(model_entry.display_name or "").strip().lower()
+    if "deepseek" in model_name or "deepseek" in display_name:
+        return instructor.Mode.JSON
     capabilities = {str(item).strip().lower() for item in model_entry.capabilities}
     if "tool" in capabilities:
         return instructor.Mode.TOOLS

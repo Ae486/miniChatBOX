@@ -17,6 +17,7 @@ from rp.context_engineering.contracts import (
     ContextOperationRequest,
     ContextOperationResult,
     ContextSourceItem,
+    ContextValidationReport,
 )
 from rp.context_engineering.policies import (
     default_budget_policy,
@@ -24,7 +25,10 @@ from rp.context_engineering.policies import (
     default_placement_policy,
     default_validation_policy,
 )
-from rp.context_engineering.validation import validate_payload_against_policy
+from rp.context_engineering.validation import (
+    filter_allowed_recovery_refs,
+    validate_payload_against_policy,
+)
 from rp.models.setup_agent import SetupAgentDialogueMessage
 
 _SETUP_ALLOWED_PAYLOAD_FIELDS = [
@@ -60,7 +64,8 @@ class SetupContextEngineeringAdapter:
         current_step: str,
         current_stage: str | None = None,
         estimated_input_tokens: int | None,
-        previous_usage: Mapping[str, int | None] | None,
+        input_token_count_source: str | None = None,
+        previous_usage: Mapping[str, Any] | None = None,
     ) -> ContextOperationRequest:
         """Build the common compact request without importing setup workspace truth."""
 
@@ -78,7 +83,6 @@ class SetupContextEngineeringAdapter:
                     else "assistant_turn",
                     source_scope=source_scope,
                     sequence_index=index,
-                    serialization_family="conversation_message",
                     source_ref=f"setup:{current_step}:history:{index}",
                     text=item.content,
                     metadata={"role": item.role, "current_step": current_step},
@@ -91,7 +95,6 @@ class SetupContextEngineeringAdapter:
                     source_family="tool_outcome",
                     source_scope=source_scope,
                     sequence_index=len(history) + index,
-                    serialization_family="tool_observation",
                     source_ref=f"setup:{current_step}:tool_outcome:{index}",
                     recovery_refs=list(item.updated_refs),
                     text=item.summary,
@@ -113,7 +116,6 @@ class SetupContextEngineeringAdapter:
                     source_family="runtime_state",
                     source_scope=source_scope,
                     sequence_index=len(history) + len(retained_tool_outcomes),
-                    serialization_family="runtime_overlay",
                     source_ref=f"setup:{current_step}:working_digest",
                     recovery_refs=list(working_digest.draft_refs),
                     payload=working_digest.model_dump(mode="json", exclude_none=True),
@@ -132,6 +134,9 @@ class SetupContextEngineeringAdapter:
         previous_total_tokens = (
             previous_usage.get("total_tokens") if previous_usage else None
         )
+        previous_token_details = (
+            previous_usage.get("token_details") if previous_usage else None
+        )
         return ContextOperationRequest(
             operation_id=f"setup:{current_step}:stage_local_compact",
             operation_kind="compact",
@@ -144,13 +149,10 @@ class SetupContextEngineeringAdapter:
                     else self._STANDARD_TOKEN_BUDGET
                 ),
                 recent_window_items=raw_history_limit,
-                compact_trigger_tokens=self._COMPACT_PROMPT_MAX_TOKENS,
-                compact_trigger_items=raw_history_limit,
             ),
             placement_policy=default_placement_policy(),
             validation_policy=self._setup_validation_policy(),
             fallback_policy=default_fallback_policy(
-                mode="deterministic_fallback",
                 fallback_summary_line_limit=6,
             ),
             previous_artifact=self.to_context_artifact(existing_summary),
@@ -166,8 +168,36 @@ class SetupContextEngineeringAdapter:
                 "compacted_history_count": max(len(history) - raw_history_limit, 0),
                 "retained_tool_outcome_count": len(retained_tool_outcomes),
                 "estimated_input_tokens": estimated_input_tokens,
+                "input_token_count_source": input_token_count_source,
                 "previous_prompt_tokens": previous_prompt_tokens,
+                "previous_completion_tokens": (
+                    previous_usage.get("completion_tokens") if previous_usage else None
+                ),
                 "previous_total_tokens": previous_total_tokens,
+                "previous_cached_tokens": (
+                    previous_usage.get("cached_tokens") if previous_usage else None
+                ),
+                "previous_reasoning_tokens": (
+                    previous_usage.get("reasoning_tokens") if previous_usage else None
+                ),
+                "previous_cache_creation_input_tokens": (
+                    previous_usage.get("cache_creation_input_tokens")
+                    if previous_usage
+                    else None
+                ),
+                "previous_cache_read_input_tokens": (
+                    previous_usage.get("cache_read_input_tokens")
+                    if previous_usage
+                    else None
+                ),
+                "previous_usage_source": (
+                    previous_usage.get("source") if previous_usage else None
+                ),
+                "previous_token_details": (
+                    dict(previous_token_details)
+                    if isinstance(previous_token_details, Mapping)
+                    else {}
+                ),
             },
         )
 
@@ -180,10 +210,7 @@ class SetupContextEngineeringAdapter:
         if summary is None:
             return None
         payload = summary.model_dump(mode="json", exclude_none=True)
-        validation_report = validate_payload_against_policy(
-            payload=payload,
-            policy=self._setup_validation_policy(),
-        )
+        validation_report = self.validate_setup_payload(payload)
         return ContextArtifact(
             artifact_id=f"setup:compact:{summary.source_fingerprint[:12]}",
             artifact_kind="compact_summary",
@@ -233,8 +260,20 @@ class SetupContextEngineeringAdapter:
                 metadata.get("compacted_history_count") or 0
             ),
             "estimated_input_tokens": metadata.get("estimated_input_tokens"),
+            "input_token_count_source": metadata.get("input_token_count_source"),
             "previous_prompt_tokens": metadata.get("previous_prompt_tokens"),
+            "previous_completion_tokens": metadata.get("previous_completion_tokens"),
             "previous_total_tokens": metadata.get("previous_total_tokens"),
+            "previous_cached_tokens": metadata.get("previous_cached_tokens"),
+            "previous_reasoning_tokens": metadata.get("previous_reasoning_tokens"),
+            "previous_cache_creation_input_tokens": metadata.get(
+                "previous_cache_creation_input_tokens"
+            ),
+            "previous_cache_read_input_tokens": metadata.get(
+                "previous_cache_read_input_tokens"
+            ),
+            "previous_usage_source": metadata.get("previous_usage_source"),
+            "previous_token_details": metadata.get("previous_token_details") or {},
             "summary_strategy": summary_strategy,
             "summary_action": summary_action,
             "fallback_reason": (
@@ -263,8 +302,20 @@ class SetupContextEngineeringAdapter:
             raw_history_count=raw_history_count,
             raw_history_chars=raw_history_chars,
             estimated_input_tokens=metadata.get("estimated_input_tokens"),
+            input_token_count_source=metadata.get("input_token_count_source"),
             previous_prompt_tokens=metadata.get("previous_prompt_tokens"),
+            previous_completion_tokens=metadata.get("previous_completion_tokens"),
             previous_total_tokens=metadata.get("previous_total_tokens"),
+            previous_cached_tokens=metadata.get("previous_cached_tokens"),
+            previous_reasoning_tokens=metadata.get("previous_reasoning_tokens"),
+            previous_cache_creation_input_tokens=metadata.get(
+                "previous_cache_creation_input_tokens"
+            ),
+            previous_cache_read_input_tokens=metadata.get(
+                "previous_cache_read_input_tokens"
+            ),
+            previous_usage_source=metadata.get("previous_usage_source"),
+            previous_token_details=dict(metadata.get("previous_token_details") or {}),
             user_edit_delta_count=user_edit_delta_count,
             prior_stage_handoff_count=prior_stage_handoff_count,
             raw_history_limit=int(metadata["raw_history_limit"]),
@@ -351,6 +402,40 @@ class SetupContextEngineeringAdapter:
         if result.artifact.created_by == "model":
             return "compact_prompt_summary"
         return "deterministic_prefix_summary"
+
+    @classmethod
+    def validate_setup_payload(
+        cls,
+        payload: Mapping[str, Any],
+    ) -> ContextValidationReport:
+        """Validate setup compact payload fields and setup-owned recovery refs."""
+
+        policy = cls._setup_validation_policy()
+        report = validate_payload_against_policy(payload=payload, policy=policy)
+        _, ref_issues = filter_allowed_recovery_refs(
+            refs=cls._payload_recovery_refs(payload),
+            policy=policy,
+        )
+        if not ref_issues:
+            return report
+        return ContextValidationReport(
+            valid=False,
+            issues=[*report.issues, *ref_issues],
+        )
+
+    @staticmethod
+    def _payload_recovery_refs(payload: Mapping[str, Any]) -> list[str]:
+        refs: list[str] = []
+        for field in ("draft_refs", "recovery_refs"):
+            value = payload.get(field)
+            if isinstance(value, list):
+                refs.extend(str(item) for item in value)
+        hints = payload.get("recovery_hints")
+        if isinstance(hints, list):
+            for item in hints:
+                if isinstance(item, Mapping) and item.get("ref") is not None:
+                    refs.append(str(item.get("ref")))
+        return refs
 
 
 def setup_recovery_hint(

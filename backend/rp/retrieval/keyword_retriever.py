@@ -7,7 +7,8 @@ import re
 import time
 import uuid
 from collections import Counter
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, cast
 
 from sqlalchemy import text
 from sqlmodel import select
@@ -22,6 +23,7 @@ _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _FIELD_WEIGHTS = {
     "title": 8.0,
     "asset_title": 6.0,
+    "document_title": 6.0,
     "entry_title": 10.0,
     "aliases": 10.0,
     "tags": 5.0,
@@ -55,14 +57,32 @@ def _weighted_tokens(text: str, *, weight: float) -> list[str]:
     return tokens * repeat_count
 
 
-def _metadata_text(metadata: dict[str, Any], *keys: str) -> str:
+def _flatten_metadata_value(value: object) -> list[str]:
+    if isinstance(value, Mapping):
+        mapping_values: list[str] = []
+        for key in sorted(value, key=lambda item: str(item)):
+            mapping_values.extend(_flatten_metadata_value(value[key]))
+        return mapping_values
+    if isinstance(value, list | tuple):
+        sequence_values: list[str] = []
+        for item in value:
+            sequence_values.extend(_flatten_metadata_value(item))
+        return sequence_values
+    if isinstance(value, set):
+        set_values: list[str] = []
+        for item in sorted(value, key=lambda entry: str(entry)):
+            set_values.extend(_flatten_metadata_value(item))
+        return set_values
+    if value is None:
+        return []
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _metadata_text(metadata: Mapping[str, Any], *keys: str) -> str:
     values: list[str] = []
     for key in keys:
-        value = metadata.get(key)
-        if isinstance(value, str) and value.strip():
-            values.append(value)
-        elif isinstance(value, list):
-            values.extend(str(item) for item in value if str(item).strip())
+        values.extend(_flatten_metadata_value(metadata.get(key)))
     return " ".join(values)
 
 
@@ -72,10 +92,7 @@ def _field_weighted_tokens(field_values: dict[str, object]) -> list[str]:
         value = field_values.get(field_name)
         if value is None:
             continue
-        if isinstance(value, list):
-            text = " ".join(str(item) for item in value if str(item).strip())
-        else:
-            text = str(value)
+        text = " ".join(_flatten_metadata_value(value))
         tokens.extend(_weighted_tokens(text, weight=weight))
     return tokens
 
@@ -129,6 +146,8 @@ def _contains_term(value: object, term: str) -> bool:
         return any(_contains_term(item, normalized_term) for item in value)
     if isinstance(value, tuple | set):
         return any(_contains_term(item, normalized_term) for item in value)
+    if isinstance(value, Mapping):
+        return any(_contains_term(item, normalized_term) for item in value.values())
     return normalized_term in str(value or "").lower()
 
 
@@ -311,10 +330,41 @@ class KeywordRetriever:
         return _field_weighted_tokens(
             {
                 "title": chunk.title or metadata.get("title") or "",
-                "asset_title": asset.title or "",
+                "asset_title": _metadata_text(
+                    {
+                        "asset_title": asset.title,
+                        "metadata_asset_title": metadata.get("asset_title"),
+                        "asset_metadata_asset_title": asset_metadata.get("asset_title"),
+                    },
+                    "asset_title",
+                    "metadata_asset_title",
+                    "asset_metadata_asset_title",
+                ),
+                "document_title": _metadata_text(
+                    {
+                        "document_title": metadata.get("document_title"),
+                        "asset_document_title": asset_metadata.get("document_title"),
+                    },
+                    "document_title",
+                    "asset_document_title",
+                ),
                 "entry_title": _metadata_text(metadata, "entry_title"),
-                "aliases": _metadata_text(metadata, "aliases"),
-                "tags": seed_tags,
+                "aliases": _metadata_text(
+                    {
+                        "metadata_aliases": metadata.get("aliases"),
+                        "asset_metadata_aliases": asset_metadata.get("aliases"),
+                    },
+                    "metadata_aliases",
+                    "asset_metadata_aliases",
+                ),
+                "tags": _metadata_text(
+                    {
+                        "metadata_or_seed_tags": seed_tags,
+                        "asset_metadata_tags": asset_metadata.get("tags"),
+                    },
+                    "metadata_or_seed_tags",
+                    "asset_metadata_tags",
+                ),
                 "section_title": _metadata_text(metadata, "section_title"),
                 "retrieval_role": _metadata_text(metadata, "retrieval_role"),
                 "semantic_path": _metadata_text(
@@ -323,7 +373,16 @@ class KeywordRetriever:
                     "entry_semantic_path",
                     "section_semantic_path",
                 ),
-                "domain_path": f"{chunk.domain_path or ''} {metadata.get('domain_path') or ''}",
+                "domain_path": _metadata_text(
+                    {
+                        "chunk_domain_path": chunk.domain_path,
+                        "metadata_domain_path": metadata.get("domain_path"),
+                        "asset_metadata_domain_path": asset_metadata.get("domain_path"),
+                    },
+                    "chunk_domain_path",
+                    "metadata_domain_path",
+                    "asset_metadata_domain_path",
+                ),
                 "text": chunk.text,
             }
         )
@@ -340,26 +399,44 @@ class KeywordRetriever:
             return 1.0
 
         metadata = chunk.metadata_json or {}
+        asset_metadata = asset.metadata_json or {}
         entity_fields = (
             chunk.title,
             asset.title,
             metadata.get("title"),
+            metadata.get("document_title"),
+            metadata.get("asset_title"),
+            asset_metadata.get("document_title"),
+            asset_metadata.get("asset_title"),
             metadata.get("entry_title"),
             metadata.get("aliases"),
+            asset_metadata.get("aliases"),
             metadata.get("tags"),
+            asset_metadata.get("tags"),
             metadata.get("semantic_path"),
             metadata.get("entry_semantic_path"),
             metadata.get("section_semantic_path"),
             chunk.domain_path,
+            metadata.get("domain_path"),
+            asset_metadata.get("domain_path"),
         )
         intent_fields = (
             chunk.title,
+            asset.title,
+            metadata.get("document_title"),
+            metadata.get("asset_title"),
+            asset_metadata.get("document_title"),
+            asset_metadata.get("asset_title"),
             metadata.get("section_title"),
             metadata.get("retrieval_role"),
             metadata.get("tags"),
+            asset_metadata.get("tags"),
             metadata.get("semantic_path"),
+            metadata.get("entry_semantic_path"),
             metadata.get("section_semantic_path"),
             chunk.domain_path,
+            metadata.get("domain_path"),
+            asset_metadata.get("domain_path"),
         )
 
         multiplier = 1.0
@@ -406,15 +483,20 @@ class KeywordRetriever:
         if not score_map:
             return []
 
+        chunk_asset_id = cast(Any, KnowledgeChunkRecord.asset_id)
+        chunk_collection_id = cast(Any, KnowledgeChunkRecord.collection_id)
+        source_asset_id = cast(Any, SourceAssetRecord.asset_id)
+        collection_id = cast(Any, KnowledgeCollectionRecord.collection_id)
+        chunk_id = cast(Any, KnowledgeChunkRecord.chunk_id)
         stmt = (
             select(KnowledgeChunkRecord, SourceAssetRecord, KnowledgeCollectionRecord)
-            .join(SourceAssetRecord, SourceAssetRecord.asset_id == KnowledgeChunkRecord.asset_id)
+            .join(SourceAssetRecord, source_asset_id == chunk_asset_id)
             .join(
                 KnowledgeCollectionRecord,
-                KnowledgeCollectionRecord.collection_id == KnowledgeChunkRecord.collection_id,
+                collection_id == chunk_collection_id,
                 isouter=True,
             )
-            .where(KnowledgeChunkRecord.chunk_id.in_(list(score_map.keys())))
+            .where(chunk_id.in_(list(score_map.keys())))
         )
         rows = []
         for chunk, asset, collection in self._session.exec(stmt).all():
@@ -437,23 +519,30 @@ class KeywordRetriever:
         self,
         query: RetrievalQuery,
     ) -> list[tuple[KnowledgeChunkRecord, SourceAssetRecord, KnowledgeCollectionRecord | None]]:
+        chunk_asset_id = cast(Any, KnowledgeChunkRecord.asset_id)
+        chunk_collection_id = cast(Any, KnowledgeChunkRecord.collection_id)
+        source_asset_id = cast(Any, SourceAssetRecord.asset_id)
+        collection_id = cast(Any, KnowledgeCollectionRecord.collection_id)
+        chunk_is_active = cast(Any, KnowledgeChunkRecord.is_active)
+        chunk_story_id = cast(Any, KnowledgeChunkRecord.story_id)
+        chunk_domain = cast(Any, KnowledgeChunkRecord.domain)
         stmt = (
             select(KnowledgeChunkRecord, SourceAssetRecord, KnowledgeCollectionRecord)
-            .join(SourceAssetRecord, SourceAssetRecord.asset_id == KnowledgeChunkRecord.asset_id)
+            .join(SourceAssetRecord, source_asset_id == chunk_asset_id)
             .join(
                 KnowledgeCollectionRecord,
-                KnowledgeCollectionRecord.collection_id == KnowledgeChunkRecord.collection_id,
+                collection_id == chunk_collection_id,
                 isouter=True,
             )
-            .where(KnowledgeChunkRecord.is_active == True)  # noqa: E712
+            .where(chunk_is_active == True)  # noqa: E712
         )
         if query.story_id not in {"", "*"}:
-            stmt = stmt.where(KnowledgeChunkRecord.story_id == query.story_id)
+            stmt = stmt.where(chunk_story_id == query.story_id)
         if query.domains:
-            stmt = stmt.where(KnowledgeChunkRecord.domain.in_([domain.value for domain in query.domains]))
+            stmt = stmt.where(chunk_domain.in_([domain.value for domain in query.domains]))
         collection_ids = list(query.filters.get("knowledge_collections") or [])
         if collection_ids:
-            stmt = stmt.where(KnowledgeChunkRecord.collection_id.in_(collection_ids))
+            stmt = stmt.where(chunk_collection_id.in_(collection_ids))
         rows = []
         for chunk, asset, collection in self._session.exec(stmt).all():
             if row_matches_common_filters(chunk=chunk, asset=asset, collection=collection, query=query):

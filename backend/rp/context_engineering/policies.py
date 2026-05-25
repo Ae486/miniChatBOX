@@ -18,24 +18,17 @@ DEFAULT_ORDERED_SLOTS = [
     "runtime_overlay",
     "compact_artifact",
     "recent_raw",
-    "retrieval",
     "tool_outcomes",
-    "sidecar",
     "metadata_only",
 ]
 
 DEFAULT_SLOT_BY_SOURCE_FAMILY = {
     "system_instruction": "stable_prefix",
-    "developer_instruction": "stable_prefix",
-    "workspace_truth": "stable_prefix",
     "runtime_state": "runtime_overlay",
     "compact_artifact": "compact_artifact",
     "user_turn": "recent_raw",
     "assistant_turn": "recent_raw",
-    "retrieval_card": "retrieval",
     "tool_outcome": "tool_outcomes",
-    "sidecar": "sidecar",
-    "debug_trace": "metadata_only",
 }
 
 
@@ -44,10 +37,7 @@ def default_budget_policy(
     context_window_tokens: int | None = None,
     response_reserve_tokens: int = 1024,
     operation_budget_tokens: int | None = None,
-    recent_window_tokens: int | None = None,
     recent_window_items: int | None = None,
-    compact_trigger_tokens: int | None = None,
-    compact_trigger_items: int | None = None,
     source_family_token_caps: dict[str, int] | None = None,
     source_family_item_caps: dict[str, int] | None = None,
 ) -> ContextBudgetPolicy:
@@ -57,10 +47,7 @@ def default_budget_policy(
         context_window_tokens=context_window_tokens,
         response_reserve_tokens=response_reserve_tokens,
         operation_budget_tokens=operation_budget_tokens,
-        recent_window_tokens=recent_window_tokens,
         recent_window_items=recent_window_items,
-        compact_trigger_tokens=compact_trigger_tokens,
-        compact_trigger_items=compact_trigger_items,
         source_family_token_caps=dict(source_family_token_caps or {}),
         source_family_item_caps=dict(source_family_item_caps or {}),
     )
@@ -70,7 +57,6 @@ def default_placement_policy(
     *,
     ordered_slots: list[str] | None = None,
     slot_by_source_family: dict[str, str] | None = None,
-    breakable_atomic_group_ids: list[str] | None = None,
 ) -> ContextPlacementPolicy:
     """Build the default slot order shared by initial adapters."""
 
@@ -81,9 +67,6 @@ def default_placement_policy(
         ordered_slots=slots,
         slot_by_source_family=slot_map,
         stable_prefix_slots=["stable_prefix"],
-        volatile_suffix_slots=["recent_raw", "tool_outcomes", "sidecar"],
-        metadata_only_slots=["metadata_only"],
-        breakable_atomic_group_ids=list(breakable_atomic_group_ids or []),
     )
 
 
@@ -114,14 +97,12 @@ def default_validation_policy(
 
 def default_fallback_policy(
     *,
-    mode: str = "deterministic_fallback",
     fallback_summary_line_limit: int = DEFAULT_FALLBACK_SUMMARY_LINE_LIMIT,
     user_visible_error_code: str | None = None,
 ) -> ContextFallbackPolicy:
-    """Build a fallback policy for compact/summarize operations."""
+    """Build the single fallback policy for compact operations."""
 
     return ContextFallbackPolicy(
-        mode=mode,  # type: ignore[arg-type]
         fallback_summary_line_limit=fallback_summary_line_limit,
         user_visible_error_code=user_visible_error_code,
     )

@@ -564,6 +564,212 @@ async def test_keyword_retriever_python_fallback_supports_chinese_field_boosts(r
 
 
 @pytest.mark.asyncio
+async def test_keyword_retriever_python_bm25_uses_existing_title_alias_tag_fields(
+    retrieval_session,
+):
+    collection = RetrievalCollectionService(retrieval_session).ensure_story_collection(
+        story_id="story-existing-fields",
+        scope="story",
+        collection_kind="archival",
+    )
+    document_service = RetrievalDocumentService(retrieval_session)
+    document_service.upsert_source_asset(
+        SourceAsset(
+            asset_id="asset-existing-fields-target",
+            story_id="story-existing-fields",
+            mode=StoryMode.LONGFORM,
+            collection_id=collection.collection_id,
+            commit_id="commit-existing-fields-target",
+            asset_kind="worldbook",
+            source_ref="memory://asset-existing-fields-target",
+            title="Generic Source",
+            parse_status="queued",
+            ingestion_status="queued",
+            mapped_targets=["foundation"],
+            metadata={
+                "asset_title": "Moon Registry",
+                "document_title": "Silver Archive",
+                "aliases": {"asset": ["Asset Lantern"]},
+                "tags": {"asset": ["lunar"]},
+                "domain_path": {"asset": "celestial.path"},
+                "seed_sections": [
+                    {
+                        "section_id": "field-target",
+                        "title": "Plain Section",
+                        "path": "foundation.world.existing_fields.target",
+                        "level": 1,
+                        "text": "A neutral passage that does not repeat the searchable labels.",
+                        "metadata": {
+                            "domain": "world_rule",
+                            "domain_path": {
+                                "root": "foundation",
+                                "leaf": "silver.registry",
+                            },
+                            "document_title": "Silver Archive",
+                            "asset_title": "Moon Registry",
+                            "aliases": ("Lantern Alias",),
+                            "tags": {"primary": ["ritual", "beacon"]},
+                        },
+                    }
+                ],
+            },
+            created_at=_utcnow(),
+            updated_at=_utcnow(),
+        )
+    )
+    document_service.upsert_source_asset(
+        SourceAsset(
+            asset_id="asset-existing-fields-noise",
+            story_id="story-existing-fields",
+            mode=StoryMode.LONGFORM,
+            collection_id=collection.collection_id,
+            commit_id="commit-existing-fields-noise",
+            asset_kind="worldbook",
+            source_ref="memory://asset-existing-fields-noise",
+            title="Generic Noise",
+            parse_status="queued",
+            ingestion_status="queued",
+            mapped_targets=["foundation"],
+            metadata={
+                "seed_sections": [
+                    {
+                        "section_id": "field-noise",
+                        "title": "Plain Section",
+                        "path": "foundation.world.existing_fields.noise",
+                        "level": 1,
+                        "text": "A neutral passage about shelves and weather.",
+                        "metadata": {
+                            "domain": "world_rule",
+                            "domain_path": "foundation.world.existing_fields.noise",
+                        },
+                    }
+                ],
+            },
+            created_at=_utcnow(),
+            updated_at=_utcnow(),
+        )
+    )
+    retrieval_session.flush()
+    ingestion_service = RetrievalIngestionService(retrieval_session)
+    ingestion_service.ingest_asset(
+        story_id="story-existing-fields",
+        asset_id="asset-existing-fields-target",
+        collection_id=collection.collection_id,
+    )
+    ingestion_service.ingest_asset(
+        story_id="story-existing-fields",
+        asset_id="asset-existing-fields-noise",
+        collection_id=collection.collection_id,
+    )
+    retrieval_session.commit()
+
+    result = await KeywordRetriever(retrieval_session).search(
+        RetrievalQuery(
+            query_id="rq-existing-fields",
+            query_kind="archival",
+            story_id="story-existing-fields",
+            text_query=(
+                "silver registry lantern alias ritual beacon "
+                "asset lantern lunar celestial"
+            ),
+            filters={"knowledge_collections": [collection.collection_id]},
+            top_k=2,
+        )
+    )
+
+    assert result.hits
+    assert result.hits[0].metadata["asset_id"] == "asset-existing-fields-target"
+
+
+@pytest.mark.asyncio
+async def test_keyword_retriever_structured_multiplier_uses_existing_metadata_fields(
+    retrieval_session,
+):
+    collection = RetrievalCollectionService(retrieval_session).ensure_story_collection(
+        story_id="story-structured-metadata-fields",
+        scope="story",
+        collection_kind="archival",
+    )
+    document_service = RetrievalDocumentService(retrieval_session)
+    for asset_id, metadata in (
+        (
+            "asset-structured-fields-target",
+            {
+                "domain": "world_rule",
+                "domain_path": {"root": "foundation", "leaf": "atlas.beacon"},
+                "document_title": "Atlas Beacon",
+                "asset_title": "Beacon Register",
+                "tags": ["ritual"],
+            },
+        ),
+        (
+            "asset-structured-fields-noise",
+            {
+                "domain": "world_rule",
+                "domain_path": "foundation.world.generic",
+                "document_title": "Generic Register",
+                "tags": ["misc"],
+            },
+        ),
+    ):
+        document_service.upsert_source_asset(
+            SourceAsset(
+                asset_id=asset_id,
+                story_id="story-structured-metadata-fields",
+                mode=StoryMode.LONGFORM,
+                collection_id=collection.collection_id,
+                commit_id=f"commit-{asset_id}",
+                asset_kind="worldbook",
+                source_ref=f"memory://{asset_id}",
+                title="Shared Source",
+                parse_status="queued",
+                ingestion_status="queued",
+                mapped_targets=["foundation"],
+                metadata={
+                    "seed_sections": [
+                        {
+                            "section_id": asset_id,
+                            "title": "Shared Section",
+                            "path": f"foundation.world.{asset_id}",
+                            "level": 1,
+                            "text": "shared neutral evidence",
+                            "metadata": metadata,
+                        }
+                    ]
+                },
+                created_at=_utcnow(),
+                updated_at=_utcnow(),
+            )
+        )
+        retrieval_session.flush()
+        RetrievalIngestionService(retrieval_session).ingest_asset(
+            story_id="story-structured-metadata-fields",
+            asset_id=asset_id,
+            collection_id=collection.collection_id,
+        )
+    retrieval_session.commit()
+
+    result = await KeywordRetriever(retrieval_session).search(
+        RetrievalQuery(
+            query_id="rq-structured-metadata-fields",
+            query_kind="archival",
+            story_id="story-structured-metadata-fields",
+            text_query="shared neutral",
+            filters={
+                "knowledge_collections": [collection.collection_id],
+                "query_analysis": {
+                    "entity_terms": ["atlas"],
+                    "intent_terms": ["ritual"],
+                },
+            },
+            top_k=2,
+        )
+    )
+
+    assert result.hits[0].metadata["asset_id"] == "asset-structured-fields-target"
+
+
+@pytest.mark.asyncio
 async def test_retrieval_service_uses_explicit_pipeline_slots(retrieval_session):
     class StubPreprocessor:
         def __init__(self) -> None:
@@ -920,6 +1126,84 @@ async def test_retrieval_service_weights_keyword_route_for_structured_queries(
         result.trace.details["rrf"]["route_weights"]["retrieval.semantic.python"]
         == 1.0
     )
+
+
+@pytest.mark.asyncio
+async def test_retrieval_service_consumes_runtime_style_route_weights(
+    retrieval_session,
+):
+    class StubRetriever:
+        def __init__(self, *, route: str, hit_id: str) -> None:
+            self.route = route
+            self.hit_id = hit_id
+
+        async def search(self, query: RetrievalQuery) -> RetrievalSearchResult:
+            return RetrievalSearchResult(
+                query=query.text_query or "",
+                hits=[
+                    RetrievalHit(
+                        hit_id=self.hit_id,
+                        query_id=query.query_id,
+                        layer="archival",
+                        domain=Domain.WORLD_RULE,
+                        domain_path=f"foundation.world.{self.hit_id}",
+                        excerpt_text=self.hit_id,
+                        score=0.5,
+                        rank=1,
+                        metadata={
+                            "asset_id": f"asset-{self.hit_id}",
+                            "section_id": self.hit_id,
+                            "section_part": 0,
+                        },
+                    )
+                ],
+                trace=RetrievalTrace(
+                    trace_id=f"trace-{self.hit_id}",
+                    query_id=query.query_id,
+                    route=self.route,
+                    result_kind="chunk",
+                    retriever_routes=[self.route],
+                    pipeline_stages=["retrieve"],
+                    candidate_count=1,
+                    returned_count=1,
+                ),
+            )
+
+    service = RetrievalService(
+        retrieval_session,
+        retrievers=[
+            StubRetriever(route="retrieval.keyword.bm25", hit_id="keyword-hit"),
+            StubRetriever(route="retrieval.semantic.python", hit_id="dense-hit"),
+        ],
+    )
+
+    result = await service.search_chunks(
+        RetrievalQuery(
+            query_id="rq-runtime-style-fusion",
+            query_kind="archival",
+            story_id="story-runtime-style-fusion",
+            text_query="broad context",
+            filters={
+                "search_policy": {
+                    "hybrid": {
+                        "route_weights": {
+                            "retrieval.keyword": 1.0,
+                            "retrieval.semantic": 1.5,
+                        }
+                    }
+                }
+            },
+            top_k=2,
+        )
+    )
+
+    assert result.hits[0].hit_id == "dense-hit"
+    assert "_rrf_weight" not in result.hits[0].model_dump(mode="json")
+    assert result.trace is not None
+    assert result.trace.details["rrf"]["route_weights"] == {
+        "retrieval.keyword.bm25": 1.0,
+        "retrieval.semantic.python": 1.5,
+    }
 
 
 @pytest.mark.asyncio

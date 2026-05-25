@@ -51,6 +51,13 @@ def build_parser() -> argparse.ArgumentParser:
     run_case.add_argument("--ragas-llm-provider-id", help="Provider id used as the evaluator LLM provider for RAGAS metrics.")
     run_case.add_argument("--ragas-embedding-model-id", help="Embedding model id used by embedding-based RAGAS metrics.")
     run_case.add_argument("--ragas-embedding-provider-id", help="Embedding provider id used by embedding-based RAGAS metrics.")
+    run_case.add_argument("--ragas-generate-response", action="store_true", help="Generate an eval-only RAG response from retrieved contexts before RAGAS judging.")
+    run_case.add_argument("--ragas-generator-model-id", help="Model id used to generate eval-only RAG responses.")
+    run_case.add_argument("--ragas-generator-provider-id", help="Provider id used to generate eval-only RAG responses.")
+    run_case.add_argument("--ragas-generator-max-contexts", type=int, help="Maximum retrieved contexts passed to the eval-only RAG generator.")
+    run_case.add_argument("--ragas-generator-max-context-chars", type=int, help="Maximum total context characters passed to the eval-only RAG generator.")
+    run_case.add_argument("--ragas-generator-max-tokens", type=int, help="Maximum output tokens for the eval-only RAG generator.")
+    run_case.add_argument("--ragas-generator-temperature", type=float, help="Temperature for the eval-only RAG generator.")
     run_case.add_argument("--sync-ragas-to-langfuse", action="store_true", help="Sync completed RAGAS metrics to Langfuse scores when Langfuse is enabled.")
     run_case.add_argument("--retrieval-embedding-model-id", help="Embedding model id used by the retrieval main chain.")
     run_case.add_argument("--retrieval-embedding-provider-id", help="Embedding provider id used by the retrieval main chain.")
@@ -76,6 +83,13 @@ def build_parser() -> argparse.ArgumentParser:
     run_suite.add_argument("--ragas-llm-provider-id", help="Provider id used as the evaluator LLM provider for RAGAS metrics.")
     run_suite.add_argument("--ragas-embedding-model-id", help="Embedding model id used by embedding-based RAGAS metrics.")
     run_suite.add_argument("--ragas-embedding-provider-id", help="Embedding provider id used by embedding-based RAGAS metrics.")
+    run_suite.add_argument("--ragas-generate-response", action="store_true", help="Generate an eval-only RAG response from retrieved contexts before RAGAS judging.")
+    run_suite.add_argument("--ragas-generator-model-id", help="Model id used to generate eval-only RAG responses.")
+    run_suite.add_argument("--ragas-generator-provider-id", help="Provider id used to generate eval-only RAG responses.")
+    run_suite.add_argument("--ragas-generator-max-contexts", type=int, help="Maximum retrieved contexts passed to the eval-only RAG generator.")
+    run_suite.add_argument("--ragas-generator-max-context-chars", type=int, help="Maximum total context characters passed to the eval-only RAG generator.")
+    run_suite.add_argument("--ragas-generator-max-tokens", type=int, help="Maximum output tokens for the eval-only RAG generator.")
+    run_suite.add_argument("--ragas-generator-temperature", type=float, help="Temperature for the eval-only RAG generator.")
     run_suite.add_argument("--sync-ragas-to-langfuse", action="store_true", help="Sync completed RAGAS metrics to Langfuse scores when Langfuse is enabled.")
     run_suite.add_argument("--retrieval-embedding-model-id", help="Embedding model id used by the retrieval main chain.")
     run_suite.add_argument("--retrieval-embedding-provider-id", help="Embedding provider id used by the retrieval main chain.")
@@ -117,6 +131,13 @@ def build_parser() -> argparse.ArgumentParser:
     replay.add_argument("--ragas-llm-provider-id", help="Provider id used as the evaluator LLM provider for RAGAS metrics.")
     replay.add_argument("--ragas-embedding-model-id", help="Embedding model id used by embedding-based RAGAS metrics.")
     replay.add_argument("--ragas-embedding-provider-id", help="Embedding provider id used by embedding-based RAGAS metrics.")
+    replay.add_argument("--ragas-generate-response", action="store_true", help="Generate an eval-only RAG response from retrieved contexts before RAGAS judging.")
+    replay.add_argument("--ragas-generator-model-id", help="Model id used to generate eval-only RAG responses.")
+    replay.add_argument("--ragas-generator-provider-id", help="Provider id used to generate eval-only RAG responses.")
+    replay.add_argument("--ragas-generator-max-contexts", type=int, help="Maximum retrieved contexts passed to the eval-only RAG generator.")
+    replay.add_argument("--ragas-generator-max-context-chars", type=int, help="Maximum total context characters passed to the eval-only RAG generator.")
+    replay.add_argument("--ragas-generator-max-tokens", type=int, help="Maximum output tokens for the eval-only RAG generator.")
+    replay.add_argument("--ragas-generator-temperature", type=float, help="Temperature for the eval-only RAG generator.")
 
     sampled_replay = subparsers.add_parser("sampled-replay", help="Build a replay bundle from a normalized sampled retrieval trace JSON.")
     sampled_replay.add_argument("input", help="Sampled retrieval trace JSON path.")
@@ -347,6 +368,20 @@ def _apply_cli_env_overrides(case, args):
         env_overrides["ragas_embedding_model_id"] = args.ragas_embedding_model_id
     if getattr(args, "ragas_embedding_provider_id", None):
         env_overrides["ragas_embedding_provider_id"] = args.ragas_embedding_provider_id
+    if getattr(args, "ragas_generate_response", False):
+        env_overrides["ragas_generate_response"] = True
+    if getattr(args, "ragas_generator_model_id", None):
+        env_overrides["ragas_generator_model_id"] = args.ragas_generator_model_id
+    if getattr(args, "ragas_generator_provider_id", None):
+        env_overrides["ragas_generator_provider_id"] = args.ragas_generator_provider_id
+    if getattr(args, "ragas_generator_max_contexts", None):
+        env_overrides["ragas_generator_max_contexts"] = args.ragas_generator_max_contexts
+    if getattr(args, "ragas_generator_max_context_chars", None):
+        env_overrides["ragas_generator_max_context_chars"] = args.ragas_generator_max_context_chars
+    if getattr(args, "ragas_generator_max_tokens", None):
+        env_overrides["ragas_generator_max_tokens"] = args.ragas_generator_max_tokens
+    if getattr(args, "ragas_generator_temperature", None) is not None:
+        env_overrides["ragas_generator_temperature"] = args.ragas_generator_temperature
     if getattr(args, "sync_ragas_to_langfuse", False):
         env_overrides["sync_ragas_to_langfuse"] = True
     if getattr(args, "retrieval_embedding_model_id", None):
@@ -388,6 +423,20 @@ def _replay_ragas_env_overrides(args) -> dict[str, Any]:
         env_overrides["ragas_embedding_model_id"] = args.ragas_embedding_model_id
     if getattr(args, "ragas_embedding_provider_id", None):
         env_overrides["ragas_embedding_provider_id"] = args.ragas_embedding_provider_id
+    if getattr(args, "ragas_generate_response", False):
+        env_overrides["ragas_generate_response"] = True
+    if getattr(args, "ragas_generator_model_id", None):
+        env_overrides["ragas_generator_model_id"] = args.ragas_generator_model_id
+    if getattr(args, "ragas_generator_provider_id", None):
+        env_overrides["ragas_generator_provider_id"] = args.ragas_generator_provider_id
+    if getattr(args, "ragas_generator_max_contexts", None):
+        env_overrides["ragas_generator_max_contexts"] = args.ragas_generator_max_contexts
+    if getattr(args, "ragas_generator_max_context_chars", None):
+        env_overrides["ragas_generator_max_context_chars"] = args.ragas_generator_max_context_chars
+    if getattr(args, "ragas_generator_max_tokens", None):
+        env_overrides["ragas_generator_max_tokens"] = args.ragas_generator_max_tokens
+    if getattr(args, "ragas_generator_temperature", None) is not None:
+        env_overrides["ragas_generator_temperature"] = args.ragas_generator_temperature
     return env_overrides
 
 

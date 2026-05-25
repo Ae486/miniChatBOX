@@ -41,6 +41,7 @@ from .policies import (
     RepairDecisionPolicy,
     ToolFailureClassifier,
 )
+from .prompts.setup_agent import runtime_overlay_instruction
 from .state import RpAgentRunState
 from .tools import RuntimeToolExecutor
 from rp.services.setup_context_governor import SetupContextGovernorService
@@ -623,7 +624,7 @@ class _RuntimeRunDriver:
         suppress_pending_text = False
         error_payload: dict[str, Any] | None = None
         model_gateway_diagnostics: dict[str, Any] | None = None
-        usage_details: dict[str, int] | None = None
+        usage_details: dict[str, Any] | None = None
         run_id = str(state["run_id"])
 
         async def _flush_pending_text() -> None:
@@ -720,13 +721,7 @@ class _RuntimeRunDriver:
                         )
                         break
                     if event_type == "usage":
-                        usage_details = {
-                            "prompt_tokens": int(payload.get("prompt_tokens") or 0),
-                            "completion_tokens": int(
-                                payload.get("completion_tokens") or 0
-                            ),
-                            "total_tokens": int(payload.get("total_tokens") or 0),
-                        }
+                        usage_details = dict(payload)
                         await self._emit_event(
                             run_id=run_id,
                             event_type="usage",
@@ -1523,22 +1518,8 @@ class _RuntimeRunDriver:
 
         return ChatMessage(
             role="system",
-            content=(
-                "Runtime turn state follows as JSON. Treat it as internal execution guidance.\n"
-                "Use it to decide whether you must repair a tool call, ask the user for missing "
-                "information, continue discussion, reconcile stale setup state, or avoid "
-                "proposing commit yet.\n"
-                "If pending_obligation is repair_tool_call, do not stop with explanation alone.\n"
-                "If pending_obligation is ask_user_for_missing_info, your next visible reply must ask "
-                "the missing question explicitly.\n"
-                "If reflection_ticket says block_commit, explain the readiness risk; final commit is confirmed through the UI commit button.\n"
-                "If cognitive_state_summary.invalidated is true, reconcile the visible draft and user edits before saying the stage is ready.\n"
-                "If working_digest exists, treat it as thin step-local control state only.\n"
-                "If tool_outcomes exist, use the outcomes but not the historical tool-call process.\n"
-                "If compact_summary exists, treat it as carry-forward context for trimmed older current-step discussion.\n"
-                "If exact setup facts are needed but only indexes, summaries, or recovery hints are visible, use setup.memory.search and setup.memory.open; do not infer missing facts.\n"
-                f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}"
-            ),
+            content=f"{runtime_overlay_instruction()}\n"
+            f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}",
         )
 
     @staticmethod

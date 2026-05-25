@@ -48,7 +48,8 @@ class SetupContextGovernorService:
         current_step: str | None = None,
         current_stage: str | None = None,
         estimated_input_tokens: int | None = None,
-        previous_usage: dict[str, int | None] | None = None,
+        input_token_count_source: str | None = None,
+        previous_usage: dict[str, Any] | None = None,
     ) -> tuple[
         list[SetupAgentDialogueMessage],
         SetupContextCompactSummary | None,
@@ -63,6 +64,7 @@ class SetupContextGovernorService:
             current_step=current_step,
             current_stage=current_stage,
             estimated_input_tokens=estimated_input_tokens,
+            input_token_count_source=input_token_count_source,
             previous_usage=previous_usage,
         )
 
@@ -77,7 +79,8 @@ class SetupContextGovernorService:
         current_step: str | None = None,
         current_stage: str | None = None,
         estimated_input_tokens: int | None = None,
-        previous_usage: dict[str, int | None] | None = None,
+        input_token_count_source: str | None = None,
+        previous_usage: dict[str, Any] | None = None,
     ) -> tuple[
         list[SetupAgentDialogueMessage],
         SetupContextCompactSummary | None,
@@ -92,6 +95,7 @@ class SetupContextGovernorService:
             current_step=current_step,
             current_stage=current_stage,
             estimated_input_tokens=estimated_input_tokens,
+            input_token_count_source=input_token_count_source,
             previous_usage=previous_usage,
         )
 
@@ -106,7 +110,8 @@ class SetupContextGovernorService:
         current_step: str | None = None,
         current_stage: str | None = None,
         estimated_input_tokens: int | None = None,
-        previous_usage: dict[str, int | None] | None = None,
+        input_token_count_source: str | None = None,
+        previous_usage: dict[str, Any] | None = None,
     ) -> tuple[
         list[SetupAgentDialogueMessage],
         SetupContextCompactSummary | None,
@@ -121,6 +126,7 @@ class SetupContextGovernorService:
             current_step=str(current_step or "unknown_step"),
             current_stage=current_stage,
             estimated_input_tokens=estimated_input_tokens,
+            input_token_count_source=input_token_count_source,
             previous_usage=previous_usage,
         )
         selection = select_context_sections(operation_request)
@@ -144,6 +150,9 @@ class SetupContextGovernorService:
         previous_total_tokens = (
             previous_usage.get("total_tokens") if previous_usage else None
         )
+        previous_token_details = (
+            previous_usage.get("token_details") if previous_usage else None
+        )
         return (
             kept_history,
             compact_summary,
@@ -152,6 +161,7 @@ class SetupContextGovernorService:
                 "kept_history_count": len(kept_history),
                 "compacted_history_count": len(selection.compactable_dropped_items),
                 "estimated_input_tokens": estimated_input_tokens,
+                "input_token_count_source": input_token_count_source,
                 "previous_prompt_tokens": (
                     int(previous_prompt_tokens)
                     if previous_prompt_tokens is not None
@@ -161,6 +171,33 @@ class SetupContextGovernorService:
                     int(previous_total_tokens)
                     if previous_total_tokens is not None
                     else None
+                ),
+                "previous_completion_tokens": self._optional_int(
+                    previous_usage.get("completion_tokens") if previous_usage else None
+                ),
+                "previous_cached_tokens": self._optional_int(
+                    previous_usage.get("cached_tokens") if previous_usage else None
+                ),
+                "previous_reasoning_tokens": self._optional_int(
+                    previous_usage.get("reasoning_tokens") if previous_usage else None
+                ),
+                "previous_cache_creation_input_tokens": self._optional_int(
+                    previous_usage.get("cache_creation_input_tokens")
+                    if previous_usage
+                    else None
+                ),
+                "previous_cache_read_input_tokens": self._optional_int(
+                    previous_usage.get("cache_read_input_tokens")
+                    if previous_usage
+                    else None
+                ),
+                "previous_usage_source": (
+                    previous_usage.get("source") if previous_usage else None
+                ),
+                "previous_token_details": (
+                    dict(previous_token_details)
+                    if isinstance(previous_token_details, dict)
+                    else {}
                 ),
                 "summary_strategy": summary_decision.get("summary_strategy") or "none",
                 "summary_action": summary_decision.get("summary_action") or "none",
@@ -179,7 +216,8 @@ class SetupContextGovernorService:
         current_step: str | None = None,
         current_stage: str | None = None,
         estimated_input_tokens: int | None = None,
-        previous_usage: dict[str, int | None] | None = None,
+        input_token_count_source: str | None = None,
+        previous_usage: dict[str, Any] | None = None,
     ) -> tuple[
         list[SetupAgentDialogueMessage],
         SetupContextCompactSummary | None,
@@ -194,6 +232,7 @@ class SetupContextGovernorService:
             current_step=str(current_step or "unknown_step"),
             current_stage=current_stage,
             estimated_input_tokens=estimated_input_tokens,
+            input_token_count_source=input_token_count_source,
             previous_usage=previous_usage,
         )
         selection = select_context_sections(operation_request)
@@ -219,6 +258,9 @@ class SetupContextGovernorService:
         previous_total_tokens = (
             previous_usage.get("total_tokens") if previous_usage else None
         )
+        previous_token_details = (
+            previous_usage.get("token_details") if previous_usage else None
+        )
         return (
             kept_history,
             compact_summary,
@@ -227,6 +269,7 @@ class SetupContextGovernorService:
                 "kept_history_count": len(kept_history),
                 "compacted_history_count": len(selection.compactable_dropped_items),
                 "estimated_input_tokens": estimated_input_tokens,
+                "input_token_count_source": input_token_count_source,
                 "previous_prompt_tokens": (
                     int(previous_prompt_tokens)
                     if previous_prompt_tokens is not None
@@ -237,6 +280,33 @@ class SetupContextGovernorService:
                     if previous_total_tokens is not None
                     else None
                 ),
+                "previous_completion_tokens": self._optional_int(
+                    previous_usage.get("completion_tokens") if previous_usage else None
+                ),
+                "previous_cached_tokens": self._optional_int(
+                    previous_usage.get("cached_tokens") if previous_usage else None
+                ),
+                "previous_reasoning_tokens": self._optional_int(
+                    previous_usage.get("reasoning_tokens") if previous_usage else None
+                ),
+                "previous_cache_creation_input_tokens": self._optional_int(
+                    previous_usage.get("cache_creation_input_tokens")
+                    if previous_usage
+                    else None
+                ),
+                "previous_cache_read_input_tokens": self._optional_int(
+                    previous_usage.get("cache_read_input_tokens")
+                    if previous_usage
+                    else None
+                ),
+                "previous_usage_source": (
+                    previous_usage.get("source") if previous_usage else None
+                ),
+                "previous_token_details": (
+                    dict(previous_token_details)
+                    if isinstance(previous_token_details, dict)
+                    else {}
+                ),
                 "summary_strategy": summary_decision.get("summary_strategy") or "none",
                 "summary_action": summary_decision.get("summary_action") or "none",
                 "fallback_reason": summary_decision.get("fallback_reason"),
@@ -246,6 +316,15 @@ class SetupContextGovernorService:
     @staticmethod
     def _normalized_context_profile(context_profile: str):
         return "compact" if context_profile == "compact" else "standard"
+
+    @staticmethod
+    def _optional_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _history_from_recent_raw(

@@ -225,6 +225,54 @@ class TestBuildCompletionKwargs:
         assert kwargs["extra_body"]["google"]["thinking_config"]["include_thoughts"] is True
 
 
+class TestTokenCounting:
+    def test_count_request_tokens_uses_litellm_token_counter(
+        self,
+        service,
+        openai_provider,
+    ):
+        request = ChatCompletionRequest(
+            model="gpt-4o",
+            messages=[ChatMessage(role="user", content="Hello")],
+            stream=False,
+            provider=openai_provider,
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "setup_memory_open",
+                        "description": "Open a setup memory ref.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"ref": {"type": "string"}},
+                            "required": ["ref"],
+                        },
+                    },
+                }
+            ],
+            tool_choice="auto",
+        )
+
+        with patch(
+            "services.litellm_service.litellm.token_counter",
+            return_value=42,
+        ) as token_counter:
+            result = service.count_request_tokens(request)
+
+        assert result == {
+            "prompt_tokens": 42,
+            "source": "litellm_token_counter",
+            "model": "openai/gpt-4o",
+            "includes_tools": True,
+        }
+        token_counter.assert_called_once()
+        kwargs = token_counter.call_args.kwargs
+        assert kwargs["model"] == "openai/gpt-4o"
+        assert kwargs["messages"] == [{"role": "user", "content": "Hello"}]
+        assert kwargs["tools"] == request.tools
+        assert kwargs["tool_choice"] == "auto"
+
+
 class TestNonChatKwargs:
     def test_build_embedding_kwargs_uses_openai_prefix_for_openai_compatible_vendor_model(
         self, service, openai_provider

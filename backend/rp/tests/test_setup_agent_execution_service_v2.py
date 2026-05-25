@@ -396,6 +396,21 @@ class _CompactPromptLLM:
         }
 
 
+class _CountingCompactPromptLLM(_CompactPromptLLM):
+    def __init__(self, *, prompt_tokens: int, source: str) -> None:
+        super().__init__()
+        self.prompt_tokens = prompt_tokens
+        self.source = source
+        self.token_count_requests: list[Any] = []
+
+    def count_request_tokens(self, request):
+        self.token_count_requests.append(request)
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "source": self.source,
+        }
+
+
 def test_setup_runtime_factory_always_uses_runtime_v2(retrieval_session):
     service = RpRuntimeFactory(retrieval_session).build_setup_agent_execution_service()
     runner = RpRuntimeFactory(retrieval_session).build_setup_graph_runner()
@@ -519,6 +534,129 @@ def test_setup_agent_execution_service_reports_observed_usage_pressure():
     assert "observed_usage_threshold" in reasons
 
 
+def test_setup_agent_execution_service_normalizes_openai_style_provider_usage():
+    result = RpAgentTurnResult(
+        status="completed",
+        finish_reason="completed_text",
+        assistant_text="Done.",
+        structured_payload={
+            "latest_response": {
+                "usage": {
+                    "prompt_tokens": 101,
+                    "completion_tokens": 23,
+                    "total_tokens": 124,
+                    "prompt_tokens_details": {"cached_tokens": 17},
+                    "completion_tokens_details": {"reasoning_tokens": 5},
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 17,
+                    "provider_specific": {"kept": True},
+                }
+            }
+        },
+    )
+
+    usage = SetupAgentExecutionService._usage_from_runtime_result(result)
+
+    assert usage is not None
+    assert usage["prompt_tokens"] == 101
+    assert usage["input_tokens"] == 101
+    assert usage["completion_tokens"] == 23
+    assert usage["output_tokens"] == 23
+    assert usage["total_tokens"] == 124
+    assert usage["cached_tokens"] == 17
+    assert usage["reasoning_tokens"] == 5
+    assert usage["cache_creation_input_tokens"] == 0
+    assert usage["cache_read_input_tokens"] == 17
+    assert usage["source"] == "provider_usage_metadata"
+    assert usage["raw_usage"]["provider_specific"] == {"kept": True}
+
+
+def test_setup_agent_execution_service_normalizes_langchain_and_gemini_usage_shapes():
+    langchain_usage = SetupAgentExecutionService._normalize_provider_usage(
+        {
+            "input_tokens": 44,
+            "output_tokens": 12,
+            "total_tokens": 56,
+            "input_token_details": {"cache_read": 7, "cache_creation": 2},
+            "output_token_details": {"reasoning": 4},
+        }
+    )
+    gemini_usage = SetupAgentExecutionService._normalize_provider_usage(
+        {
+            "promptTokenCount": 30,
+            "candidatesTokenCount": 9,
+            "totalTokenCount": 39,
+            "thoughtsTokenCount": 6,
+        }
+    )
+
+    assert langchain_usage is not None
+    assert langchain_usage["prompt_tokens"] == 44
+    assert langchain_usage["completion_tokens"] == 12
+    assert langchain_usage["cache_read_input_tokens"] == 7
+    assert langchain_usage["cache_creation_input_tokens"] == 2
+    assert langchain_usage["reasoning_tokens"] == 4
+    assert gemini_usage is not None
+    assert gemini_usage["prompt_tokens"] == 30
+    assert gemini_usage["completion_tokens"] == 9
+    assert gemini_usage["total_tokens"] == 39
+    assert gemini_usage["reasoning_tokens"] == 6
+
+
+@pytest.mark.asyncio
+async def test_setup_agent_execution_service_v2_uses_litellm_token_counter_for_pressure(
+    retrieval_session,
+):
+    workspace_service = SetupWorkspaceService(retrieval_session)
+    context_builder = SetupContextBuilder(workspace_service)
+    runtime_state_service = SetupAgentRuntimeStateService(retrieval_session)
+    adapter = SetupRuntimeAdapter()
+    llm = _CountingCompactPromptLLM(
+        prompt_tokens=1900,
+        source="litellm_token_counter",
+    )
+    service = SetupAgentExecutionService(
+        workspace_service=workspace_service,
+        context_builder=context_builder,
+        adapter=adapter,
+        runtime_executor=None,
+        runtime_state_service=runtime_state_service,
+        llm_service=llm,
+    )
+    workspace = workspace_service.create_workspace(
+        story_id="story-token-counter-pressure",
+        mode=StoryMode.LONGFORM,
+    )
+    request = SetupAgentTurnRequest(
+        workspace_id=workspace.workspace_id,
+        model_id="model-1",
+        user_prompt="Continue setup.",
+        history=[],
+        user_edit_delta_ids=[],
+    )
+
+    turn_input, context_packet = await service._build_runtime_v2_turn_input(
+        adapter=adapter,
+        request=request,
+        workspace=workspace,
+        model_name="gpt-4o-mini",
+        provider=ProviderConfig(
+            type="openai",
+            api_key="sk-test",
+            api_url="https://example.com/v1",
+            custom_headers={},
+        ),
+    )
+
+    report = turn_input.metadata["context_report"]
+    assert context_packet.context_profile == "compact"
+    assert len(llm.token_count_requests) == 1
+    assert len(llm.requests) == 0
+    assert report["estimated_input_tokens"] == 1900
+    assert report["input_token_count_source"] == "litellm_token_counter"
+    assert "estimated_input_tokens_threshold" in report["profile_reasons"]
+
+
 @pytest.mark.asyncio
 async def test_setup_agent_execution_service_v2_builds_governed_history_for_compact_turn(
     retrieval_session,
@@ -629,6 +767,57 @@ async def test_setup_agent_execution_service_v2_builds_governed_history_for_comp
         ]
         == "SetupCapabilityPlan.prompt_guidance_fragments"
     )
+
+
+@pytest.mark.asyncio
+async def test_setup_agent_execution_service_v2_appends_external_mcp_tool_allowlist(
+    retrieval_session,
+):
+    workspace_service = SetupWorkspaceService(retrieval_session)
+    context_builder = SetupContextBuilder(workspace_service)
+    runtime_state_service = SetupAgentRuntimeStateService(retrieval_session)
+    service = SetupAgentExecutionService(
+        workspace_service=workspace_service,
+        context_builder=context_builder,
+        runtime_state_service=runtime_state_service,
+    )
+    workspace = workspace_service.create_workspace(
+        story_id="story-setup-external-mcp-scope",
+        mode=StoryMode.LONGFORM,
+    )
+    request = SetupAgentTurnRequest(
+        workspace_id=workspace.workspace_id,
+        model_id="model-1",
+        target_stage=SetupStageId.WORLD_BACKGROUND,
+        user_prompt="Use enabled MCP if needed.",
+        external_mcp_tool_allowlist=[
+            "web__search",
+            "web__search",
+            "  web__fetch  ",
+            "",
+        ],
+    )
+
+    turn_input, _ = await service._build_runtime_v2_turn_input(
+        adapter=SetupRuntimeAdapter(),
+        request=request,
+        workspace=workspace,
+        model_name="gpt-4o-mini",
+        provider=ProviderConfig(
+            type="openai",
+            api_key="sk-test",
+            api_url="https://example.com/v1",
+            custom_headers={},
+        ),
+    )
+
+    assert "setup.memory.search" in turn_input.tool_scope
+    assert "setup.stage_entry.write" in turn_input.tool_scope
+    assert turn_input.tool_scope[-2:] == ["web__search", "web__fetch"]
+    assert turn_input.metadata["external_mcp_tool_allowlist"] == [
+        "web__search",
+        "web__fetch",
+    ]
 
 
 @pytest.mark.asyncio
@@ -928,6 +1117,10 @@ async def test_setup_agent_execution_service_v2_surfaces_previous_usage_pressure
                         "prompt_tokens": 1901,
                         "completion_tokens": 8,
                         "total_tokens": 1909,
+                        "prompt_tokens_details": {"cached_tokens": 13},
+                        "completion_tokens_details": {"reasoning_tokens": 4},
+                        "cache_creation_input_tokens": 2,
+                        "cache_read_input_tokens": 13,
                     }
                 }
             },
@@ -959,7 +1152,16 @@ async def test_setup_agent_execution_service_v2_surfaces_previous_usage_pressure
     assert len(llm.requests) == 0
     assert "observed_usage_threshold" in report["profile_reasons"]
     assert report["previous_prompt_tokens"] == 1901
+    assert report["previous_completion_tokens"] == 8
     assert report["previous_total_tokens"] == 1909
+    assert report["previous_cached_tokens"] == 13
+    assert report["previous_reasoning_tokens"] == 4
+    assert report["previous_cache_creation_input_tokens"] == 2
+    assert report["previous_cache_read_input_tokens"] == 13
+    assert report["previous_usage_source"] == "provider_usage_metadata"
+    assert report["previous_token_details"]["prompt_tokens_details"] == {
+        "cached_tokens": 13
+    }
 
 
 @pytest.mark.asyncio

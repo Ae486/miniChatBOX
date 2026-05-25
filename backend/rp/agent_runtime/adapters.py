@@ -86,6 +86,13 @@ class SetupRuntimeAdapter:
             current_step.value,
             current_stage=selected_stage.value if selected_stage is not None else None,
         )
+        external_mcp_tool_allowlist = self._external_mcp_tool_allowlist(request)
+        runtime_tool_scope = self._ordered_unique(
+            [
+                *capability_plan.runtime_allowlist,
+                *external_mcp_tool_allowlist,
+            ]
+        )
         system_prompt = self._prompt_service.build_system_prompt(
             mode=workspace.mode,
             current_step=current_step,
@@ -236,13 +243,14 @@ class SetupRuntimeAdapter:
                 ),
                 "governance_metadata": dict(governance_metadata or {}),
             },
-            tool_scope=list(capability_plan.runtime_allowlist),
+            tool_scope=runtime_tool_scope,
             metadata={
                 "model_name": model_name,
                 "provider": provider.model_dump(mode="json", exclude_none=True),
                 "capability_plan": capability_plan.model_dump(
                     mode="json", exclude_none=True
                 ),
+                "external_mcp_tool_allowlist": external_mcp_tool_allowlist,
                 "skill_pack_name": (
                     skill_pack.name if skill_pack is not None else None
                 ),
@@ -264,6 +272,22 @@ class SetupRuntimeAdapter:
     @staticmethod
     def build_runtime_profile() -> RuntimeProfile:
         return build_setup_agent_profile()
+
+    @staticmethod
+    def _external_mcp_tool_allowlist(
+        request: SetupAgentTurnRequest,
+    ) -> list[str]:
+        return SetupRuntimeAdapter._ordered_unique(
+            [
+                item.strip()
+                for item in request.external_mcp_tool_allowlist
+                if item.strip()
+            ]
+        )
+
+    @staticmethod
+    def _ordered_unique(values: list[str]) -> list[str]:
+        return list(dict.fromkeys(values))
 
     @staticmethod
     def _latest_step_proposal(*, workspace, current_step, current_stage=None):

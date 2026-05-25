@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from rp.agent_runtime.prompts.setup_agent import tool_description_text
 from rp.agent_runtime.profiles import build_setup_agent_capability_plan
 from rp.models.setup_drafts import (
     SetupDraftEntry,
@@ -79,6 +80,22 @@ def test_setup_session_memory_tools_are_registered_and_scoped():
     assert "setup.memory.search" in plan.active_tool_names
     assert "setup.memory.open" in plan.active_tool_names
     assert "setup.memory.read_refs" in plan.active_tool_names
+    search_registration = next(
+        entry for entry in SETUP_TOOL_REGISTRY if entry.name == "setup.memory.search"
+    )
+    open_registration = next(
+        entry for entry in SETUP_TOOL_REGISTRY if entry.name == "setup.memory.open"
+    )
+    assert (
+        "named setup objects before creative design" in search_registration.description
+    )
+    assert "not fact content" in search_registration.description
+    assert "named setup object" in open_registration.description
+    assert "clean structured fact content" in open_registration.description
+    assert search_registration.description == tool_description_text(
+        "setup.memory.search"
+    )
+    assert open_registration.description == tool_description_text("setup.memory.open")
     assert "memory.get_state" not in plan.runtime_allowlist
     assert "memory.get_summary" not in plan.runtime_allowlist
     assert "memory.search_recall" not in plan.runtime_allowlist

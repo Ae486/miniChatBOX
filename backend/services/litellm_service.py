@@ -150,6 +150,38 @@ class LiteLLMService:
         normalized_request = get_request_normalization_service().normalize(request)
         return self._build_completion_kwargs_from_normalized(normalized_request)
 
+    def count_request_tokens(self, request: ChatCompletionRequest) -> dict[str, object]:
+        """Count prompt tokens locally with LiteLLM's model tokenizer.
+
+        This is a preflight estimate from LiteLLM's tokenizer layer, not the
+        provider's response-side billing metadata. It avoids network calls and
+        includes tool schemas when they are already present on the request.
+        Callers should still treat provider ``usage`` as the post-call
+        observation source.
+        """
+
+        normalized_request = get_request_normalization_service().normalize(request)
+        provider = normalized_request.provider
+        if provider is None:
+            raise ValueError("Provider config is required for token counting")
+        model = self._get_litellm_model(provider, normalized_request.model)
+        messages = [
+            message.model_dump(exclude_none=True)
+            for message in normalized_request.messages
+        ]
+        prompt_tokens = litellm.token_counter(
+            model=model,
+            messages=messages,
+            tools=normalized_request.tools,
+            tool_choice=normalized_request.tool_choice,
+        )
+        return {
+            "prompt_tokens": max(int(prompt_tokens), 0),
+            "source": "litellm_token_counter",
+            "model": model,
+            "includes_tools": bool(normalized_request.tools),
+        }
+
     def build_embedding_kwargs(
         self,
         *,

@@ -2974,7 +2974,7 @@ async def test_story_graph_runner_stream_buffers_when_writer_retrieval_loop_is_e
                                 _tool_loop_call(
                                     "call_search",
                                     "retrieval.search",
-                                    {"query": "storm", "mode": "mixed"},
+                                    {"query": "storm", "mode": "semantic"},
                                 )
                             ],
                         }

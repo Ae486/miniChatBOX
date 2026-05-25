@@ -10,6 +10,7 @@ from models.model_registry import ModelRegistryEntry
 from models.provider_registry import ProviderRegistryEntry
 from rp.eval.case_loader import load_case
 from rp.eval.cli import _apply_cli_env_overrides, _print_payload, build_parser, main
+from rp.eval.ragas_generation import RagasGeneratedResponse
 from services.model_registry import get_model_registry_service
 from services.provider_registry import get_provider_registry_service
 import services.model_registry as model_registry_module
@@ -714,3 +715,85 @@ def test_eval_cli_passes_ragas_runtime_overrides(
     assert report["ragas"]["status"] == "completed"
     assert report["ragas"]["runtime"]["llm"]["model_id"] == "model-ragas-judge"
     assert report["ragas"]["runtime"]["embeddings"]["model_id"] == "model-ragas-embed"
+
+
+def test_eval_cli_passes_ragas_generation_overrides(
+    retrieval_session,
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    monkeypatch.setattr(
+        "rp.eval.cli._open_eval_session",
+        lambda: nullcontext(retrieval_session),
+    )
+    monkeypatch.setattr("rp.eval.runner.ragas_available", lambda: True)
+    monkeypatch.setattr(
+        "rp.eval.runner.generate_eval_rag_response",
+        lambda *, sample, config: RagasGeneratedResponse(
+            response="Generated eval-only RAG answer.",
+            metadata={
+                "enabled": True,
+                "status": "completed",
+                "model_id": config.model_id,
+                "provider_id": config.provider_id,
+                "max_contexts": config.max_contexts,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "rp.eval.runner.resolve_metric_objects",
+        lambda metrics, **kwargs: ["metric"],
+    )
+    monkeypatch.setattr(
+        "rp.eval.runner.resolve_ragas_runtime_bindings",
+        lambda **kwargs: type(
+            "_Runtime",
+            (),
+            {
+                "llm": object(),
+                "embeddings": None,
+                "metadata": {"llm": {"model_id": "model-ragas-judge"}},
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        "rp.eval.runner.run_ragas_evaluation",
+        lambda **kwargs: [{"faithfulness": 0.94}],
+    )
+
+    exit_code = main(
+        [
+            "run-case",
+            str(_case_path("retrieval", "search", "query_trace_and_provenance.v1.json")),
+            "--output-dir",
+            str(tmp_path / "ragas-generation-output"),
+            "--enable-ragas",
+            "--ragas-metric",
+            "faithfulness",
+            "--ragas-llm-model-id",
+            "model-ragas-judge",
+            "--ragas-llm-provider-id",
+            "provider-ragas-judge",
+            "--ragas-generate-response",
+            "--ragas-generator-model-id",
+            "model-generator",
+            "--ragas-generator-provider-id",
+            "provider-generator",
+            "--ragas-generator-max-contexts",
+            "3",
+        ]
+    )
+    capsys.readouterr()
+
+    assert exit_code == 0
+    suite_summary = json.loads(
+        (tmp_path / "ragas-generation-output" / "suite-summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    report = suite_summary["items"][0]["report"]
+    assert report["ragas"]["status"] == "completed"
+    assert report["ragas"]["generation"]["model_id"] == "model-generator"
+    assert report["ragas"]["generation"]["provider_id"] == "provider-generator"
+    assert report["ragas"]["generation"]["max_contexts"] == 3

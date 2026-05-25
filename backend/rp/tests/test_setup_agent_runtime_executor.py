@@ -1135,7 +1135,12 @@ class _StreamToolLLM:
 class _StreamUsageLLM:
     async def chat_completion_stream(self, request):
         yield 'data: {"type":"text_delta","delta":"Streaming answer."}\n\n'
-        yield 'data: {"type":"usage","prompt_tokens":11,"completion_tokens":7,"total_tokens":18}\n\n'
+        yield (
+            'data: {"type":"usage","prompt_tokens":11,"completion_tokens":7,'
+            '"total_tokens":18,"prompt_tokens_details":{"cached_tokens":3},'
+            '"completion_tokens_details":{"reasoning_tokens":2},'
+            '"cache_read_input_tokens":3}\n\n'
+        )
         yield 'data: {"type":"done"}\n\n'
 
 
@@ -1323,6 +1328,8 @@ async def test_runtime_executor_places_runtime_overlay_after_system_prompt():
     assert messages[1].role == "system"
     assert "Runtime turn state follows as JSON." in messages[1].content
     assert "setup.memory.open" in messages[1].content
+    assert "creative design involving named setup objects" in messages[1].content
+    assert "ground that object through setup.memory.search" in messages[1].content
     assert "context_packet" not in messages[1].content
     assert "context_report" not in messages[1].content
     assert messages[2].role == "user"
@@ -2214,4 +2221,9 @@ async def test_runtime_executor_stream_preserves_usage_in_latest_response():
     assert latest_response["usage"]["prompt_tokens"] == 11
     assert latest_response["usage"]["completion_tokens"] == 7
     assert latest_response["usage"]["total_tokens"] == 18
+    assert latest_response["usage"]["prompt_tokens_details"]["cached_tokens"] == 3
+    assert (
+        latest_response["usage"]["completion_tokens_details"]["reasoning_tokens"] == 2
+    )
+    assert latest_response["usage"]["cache_read_input_tokens"] == 3
     assert executor.last_result.structured_payload["loop_trace"]

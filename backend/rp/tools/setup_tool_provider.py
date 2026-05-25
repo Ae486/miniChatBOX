@@ -28,6 +28,7 @@ from rp.tools.setup_tools.read_draft_refs import ReadDraftRefsTool
 from rp.services.setup_workspace_service import SetupWorkspaceService
 from rp.tools.setup_tool_contracts import SetupToolContractError
 from rp.tools.setup_tool_registry import (
+    SETUP_TOOL_REGISTRY,
     build_setup_tool_infos,
     build_setup_tool_schema_map,
 )
@@ -184,17 +185,11 @@ class SetupToolProvider:
         raise ValueError(f"Unknown setup tool: {tool_name}")
 
     def _build_dispatch_handlers(self) -> dict[str, Callable[[Any], Any]]:
-        return {
-            "setup.asset.register": self._asset_register_tool._dispatch_asset_register,
-            "setup.memory.search": self._memory_search_tool._dispatch_memory_search,
-            "setup.memory.open": self._memory_open_tool._dispatch_memory_open,
-            "setup.memory.read_refs": self._memory_read_refs_tool._dispatch_memory_read_refs,
-            "setup.stage_entry.list": self._stage_entry_list_tool._dispatch_stage_entry_list,
-            "setup.stage_entry.read": self._stage_entry_read_tool._dispatch_stage_entry_read,
-            "setup.stage_entry.write": self._stage_entry_write_tool._dispatch_stage_entry_write,
-            "setup.stage_entry.edit": self._stage_entry_edit_tool._dispatch_stage_entry_edit,
-            "setup.stage_entry.delete": self._stage_entry_delete_tool._dispatch_stage_entry_delete,
-        }
+        handlers: dict[str, Callable[[Any], Any]] = {}
+        for registration in SETUP_TOOL_REGISTRY:
+            owner = getattr(self, registration.handler_attr)
+            handlers[registration.name] = getattr(owner, registration.dispatch_method)
+        return handlers
 
     def _validation_error_details(
         self,

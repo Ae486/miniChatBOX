@@ -22,7 +22,6 @@ def test_payload_validation_reports_all_issue_families():
                 "analysis",
                 "title",
                 "source_ref",
-                "draft_refs",
             ]
         },
     )
@@ -32,7 +31,6 @@ def test_payload_validation_reports_all_issue_families():
             "analysis": "scratchpad",
             "title": "too long title",
             "source_ref": "source:denied",
-            "draft_refs": ["bad:ref"],
             "unknown": True,
         },
         policy=policy,
@@ -44,7 +42,6 @@ def test_payload_validation_reports_all_issue_families():
     assert "forbidden_payload_field" in codes
     assert "list_too_long" in codes
     assert "string_too_long" in codes
-    assert "unsupported_recovery_ref" in codes
     assert "unsupported_source_ref" in codes
 
 

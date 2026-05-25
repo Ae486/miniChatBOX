@@ -96,19 +96,6 @@ def validate_payload_against_policy(
                         )
                     )
 
-    refs: list[str] = []
-    for field in ("recovery_refs", "draft_refs"):
-        value = payload.get(field)
-        if isinstance(value, list):
-            refs.extend(str(item) for item in value)
-    recovery_hints = payload.get("recovery_hints")
-    if isinstance(recovery_hints, list):
-        for item in recovery_hints:
-            if isinstance(item, Mapping) and item.get("ref") is not None:
-                refs.append(str(item.get("ref")))
-    _, ref_issues = filter_allowed_recovery_refs(refs=refs, policy=policy)
-    issues.extend(ref_issues)
-
     if policy.allowed_source_refs:
         allowed_source_refs = set(policy.allowed_source_refs)
         source_ref = payload.get("source_ref")

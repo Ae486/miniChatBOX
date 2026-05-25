@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from rp.eval.case_loader import load_case
+from rp.eval.ragas_generation import RagasGeneratedResponse
 from rp.eval.runner import EvalRunner
 
 
@@ -195,6 +196,79 @@ async def test_eval_runner_records_completed_ragas_metrics_when_execution_succee
     assert result.report["ragas"]["status"] == "completed"
     assert result.report["ragas"]["metric_summary"]["context_precision"] == 0.88
     assert result.report["ragas"]["runtime"]["llm"]["model_id"] == "model-judge"
+
+
+@pytest.mark.asyncio
+async def test_eval_runner_generates_eval_only_ragas_response_when_enabled(
+    retrieval_session,
+    monkeypatch,
+):
+    case = load_case(_case_path("retrieval", "search", "query_trace_and_provenance.v1.json"))
+    case = case.model_copy(
+        deep=True,
+        update={
+            "input": case.input.model_copy(
+                deep=True,
+                update={
+                    "env_overrides": {
+                        **case.input.env_overrides,
+                        "enable_ragas": True,
+                        "ragas_generate_response": True,
+                        "ragas_generator_model_id": "model-generator",
+                        "ragas_generator_provider_id": "provider-generator",
+                        "ragas_llm_model_id": "model-judge",
+                        "ragas_llm_provider_id": "provider-judge",
+                    }
+                },
+            )
+        },
+    )
+    monkeypatch.setattr("rp.eval.runner.ragas_available", lambda: True)
+    monkeypatch.setattr(
+        "rp.eval.runner.generate_eval_rag_response",
+        lambda *, sample, config: RagasGeneratedResponse(
+            response="Generated answer grounded in retrieved contexts.",
+            metadata={
+                "enabled": True,
+                "status": "completed",
+                "model_id": config.model_id,
+                "provider_id": config.provider_id,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "rp.eval.runner.resolve_metric_objects",
+        lambda metrics, **kwargs: ["metric"],
+    )
+    monkeypatch.setattr(
+        "rp.eval.runner.resolve_ragas_runtime_bindings",
+        lambda **kwargs: type(
+            "_Runtime",
+            (),
+            {
+                "llm": object(),
+                "embeddings": None,
+                "metadata": {"llm": {"model_id": "model-judge"}},
+            },
+        )(),
+    )
+
+    def _fake_ragas_evaluation(**kwargs):
+        samples = kwargs["samples"]
+        assert samples[0].response == "Generated answer grounded in retrieved contexts."
+        return [{"faithfulness": 0.91}]
+
+    monkeypatch.setattr(
+        "rp.eval.runner.run_ragas_evaluation",
+        _fake_ragas_evaluation,
+    )
+
+    result = await EvalRunner(retrieval_session).run_case(case)
+
+    assert result.report["ragas"]["status"] == "completed"
+    assert result.report["ragas"]["generation"]["status"] == "completed"
+    assert result.report["ragas"]["generation"]["model_id"] == "model-generator"
+    assert result.report["ragas"]["metric_summary"]["faithfulness"] == 0.91
 
 
 @pytest.mark.asyncio

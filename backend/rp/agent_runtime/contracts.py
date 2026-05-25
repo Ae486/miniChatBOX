@@ -485,8 +485,16 @@ class SetupContextGovernanceReport(BaseModel):
     raw_history_count: int = 0
     raw_history_chars: int = 0
     estimated_input_tokens: int | None = None
+    input_token_count_source: str | None = None
     previous_prompt_tokens: int | None = None
+    previous_completion_tokens: int | None = None
     previous_total_tokens: int | None = None
+    previous_cached_tokens: int | None = None
+    previous_reasoning_tokens: int | None = None
+    previous_cache_creation_input_tokens: int | None = None
+    previous_cache_read_input_tokens: int | None = None
+    previous_usage_source: str | None = None
+    previous_token_details: dict[str, Any] = Field(default_factory=dict)
     user_edit_delta_count: int = 0
     prior_stage_handoff_count: int = 0
     raw_history_limit: int = 0

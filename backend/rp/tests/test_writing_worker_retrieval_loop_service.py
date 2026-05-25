@@ -53,6 +53,10 @@ def test_writer_retrieval_search_tool_schema_exposes_only_query_hints():
     assert "filters" not in properties
     assert "rerank" not in properties
     assert "route_weights" not in properties
+    assert properties["mode"]["enum"] == ["entity", "relation", "semantic"]
+    assert "separate entity searches" in search_tool["function"]["description"]
+    assert "Use relation" in search_tool["function"]["description"]
+    assert "Use semantic" in search_tool["function"]["description"]
     assert parameters["required"] == ["query"]
 
 
@@ -290,7 +294,7 @@ async def test_writing_worker_execution_service_runs_search_expand_usage_then_fi
                                     "retrieval.search",
                                     {
                                         "query": "storm",
-                                        "mode": "mixed",
+                                        "mode": "semantic",
                                         "lexical_anchors": ["storm"],
                                         "semantic_predicates": [],
                                     },
@@ -429,7 +433,7 @@ async def test_writing_worker_execution_service_fails_closed_when_final_output_s
                                 _tool_call(
                                     "call_search",
                                     "retrieval.search",
-                                    {"query": "storm", "mode": "mixed"},
+                                    {"query": "storm", "mode": "semantic"},
                                 )
                             ],
                         }
@@ -497,7 +501,7 @@ async def test_writing_worker_execution_service_enforces_attempt_limit(
                                 _tool_call(
                                     "call_search_1",
                                     "retrieval.search",
-                                    {"query": "storm", "mode": "mixed"},
+                                    {"query": "storm", "mode": "semantic"},
                                 )
                             ],
                         }

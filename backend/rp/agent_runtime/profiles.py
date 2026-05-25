@@ -7,6 +7,7 @@ from rp.agent_runtime.contracts import (
     SetupCapabilityGuidanceFragment,
     SetupCapabilityPlan,
 )
+from rp.agent_runtime.prompts.setup_agent import capability_guidance_text
 from rp.models.setup_stage import SetupStageId
 
 SETUP_READ_ONLY_MEMORY_TOOLS: tuple[str, ...] = (
@@ -186,51 +187,33 @@ def _prompt_guidance_fragments(
         add(
             "stage_entry.write",
             ("setup.stage_entry.write",),
-            (
-                "For world_background, character_design, and plot_blueprint, use "
-                "setup.stage_entry.write as the primary draft write tool. Provide "
-                "only entry_type, title, summary, and text sections; the backend "
-                "chooses the current stage, ids, semantic paths, and section shape."
-            ),
+            capability_guidance_text("stage_entry.write"),
         )
         add(
             "stage_entry.read_list",
             ("setup.stage_entry.list", "setup.stage_entry.read"),
-            (
-                "Use setup.stage_entry.list and setup.stage_entry.read to inspect "
-                "the current stage draft before editing or deleting entries."
-            ),
+            capability_guidance_text("stage_entry.read_list"),
         )
         add(
             "stage_entry.edit_delete",
             ("setup.stage_entry.edit", "setup.stage_entry.delete"),
-            (
-                "Use setup.stage_entry.edit or setup.stage_entry.delete only with "
-                "a current target_ref and basis_fingerprint from the current stage."
-            ),
+            capability_guidance_text("stage_entry.edit_delete"),
         )
     add(
         "asset.register",
         ("setup.asset.register",),
-        "Use setup.asset.register when the user provides a setup-scoped reference asset.",
+        capability_guidance_text("asset.register"),
     )
     add(
         "setup_session_memory.search",
         ("setup.memory.search", "setup.memory.open"),
-        (
-            "Use setup.memory.search to find setup fact refs from editable draft "
-            "and accepted setup truth when the needed exact fact is not visible. "
-            "Search results and navigation_summary are navigation only, not fact "
-            "content. Use setup.memory.open on a chosen ref before relying on "
-            "exact details. Opening a level-3 entry ref returns a level-4 section "
-            "directory; opening a level-4 section ref returns clean fact content."
-        ),
+        capability_guidance_text("setup_session_memory.search"),
     )
     for tool_name in patch_tools:
         add(
             f"legacy_patch.{tool_name}",
             (tool_name,),
-            f"Use {tool_name} only for its legacy step-specific draft family.",
+            capability_guidance_text("legacy_patch", tool_name=tool_name),
         )
     return fragments
 

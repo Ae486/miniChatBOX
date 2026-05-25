@@ -46,7 +46,6 @@ def build_manifest_item(
             if estimated_tokens is None
             else estimated_tokens
         ),
-        atomic_group_id=item.atomic_group_id,
         metadata=dict(metadata or {}),
     )
 

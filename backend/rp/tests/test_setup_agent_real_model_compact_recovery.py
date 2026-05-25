@@ -308,9 +308,12 @@ class _CapturingRealSetupLLMService:
         else:
             is_stage_entry_pre_tool_request = False
         if self.recovery_phase and not self.recovery_prompt_checked:
-            self._assert_recovery_round_prompt_visibility(request)
-            self.recovery_prompt_checked = True
-            is_recovery_pre_tool_request = True
+            if self._is_setup_compact_prompt_request(request):
+                is_recovery_pre_tool_request = False
+            else:
+                self._assert_recovery_round_prompt_visibility(request)
+                self.recovery_prompt_checked = True
+                is_recovery_pre_tool_request = True
         if self.memory_behavior_phase and not self.memory_behavior_prompt_checked:
             self._assert_memory_behavior_round_prompt_visibility(request)
             self.memory_behavior_first_tool_names = _tool_names_from_request(request)
@@ -344,6 +347,16 @@ class _CapturingRealSetupLLMService:
             "normalized qualified names"
         )
         assert "ref" in (open_schema.get("required") or [])
+
+    @staticmethod
+    def _is_setup_compact_prompt_request(request: Any) -> bool:
+        if list(getattr(request, "tools", None) or []):
+            return False
+        visible_text = _message_text(list(request.messages or []))
+        return (
+            "dropped_current_step_messages" in visible_text
+            and "dropped_current_step_fingerprint" in visible_text
+        )
 
     @staticmethod
     def _assert_stage_entry_round_prompt_visibility(request: Any) -> None:

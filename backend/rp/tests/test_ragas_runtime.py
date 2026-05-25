@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import instructor
+
 from models.model_registry import ModelRegistryEntry
 from models.provider_registry import ProviderRegistryEntry
 from rp.eval.ragas_runtime import (
     ProjectRagasEmbeddings,
+    _select_instructor_mode,
     resolve_ragas_runtime_bindings,
 )
 from rp.models.retrieval_runtime_config import RetrievalRuntimeConfig
@@ -51,6 +54,19 @@ def test_project_ragas_embeddings_exposes_query_and_documents_api():
 
     assert wrapper.embed_query("abc") == [3.0]
     assert wrapper.embed_documents(["a", "abcd"]) == [[1.0], [4.0]]
+
+
+def test_ragas_deepseek_judge_prefers_json_mode_over_tools():
+    model = ModelRegistryEntry(
+        id="model-deepseek",
+        provider_id="provider-deepseek",
+        model_name="deepseek-v4-flash",
+        display_name="DeepSeek",
+        capabilities=["tool"],
+        is_enabled=True,
+    )
+
+    assert _select_instructor_mode(model) == instructor.Mode.JSON
 
 
 def test_resolve_ragas_runtime_bindings_uses_judge_llm_and_story_embedding_defaults(
